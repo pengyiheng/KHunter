@@ -14,6 +14,7 @@ K线数据增量更新器
 - 完善的错误处理和重试机制
 """
 
+import gc
 import logging
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime, timedelta
@@ -22,10 +23,46 @@ import time
 
 logger = logging.getLogger(__name__)
 
+#: `stock_kline` 的**行情列**（UPSERT 只更新这些列 ✓）
+KLINE_DATA_COLS = ('code', 'date', 'open', 'high', 'low', 'close', 'volume')
+#: 冲突时允许被覆盖的列（其余列如 market_cap / K / D / J / created_date **必须保留** ✓）
+KLINE_UPDATABLE_COLS = ('open', 'high', 'low', 'close', 'volume')
+
+
+def kline_upsert_sql(table: str = 'stock_kline') -> str:
+    """K 线幂等写入 SQL（**只更新行情列，保留派生列** ✓）
+
+    【2026-09-25 修复】原实现为 `INSERT OR REPLACE` ✗ —— REPLACE 语义是"删+插"，
+    且语句只列出 7 列 ⇒ 会把 `market_cap / K / D / J / created_date` 等
+    **未列出列静默重置为空** ✗（派生数据被抹掉）。
+    现改为 UPSERT：冲突时**仅更新 OHLCV** ✓，其余列原样保留 ✓。
+    SQLite < 3.24 时退回"全列 REPLACE"（列全写 ⇒ 仍不会重置未列出列 ✓）。
+
+    Args:
+        table: 目标表名（默认 stock_kline）
+
+    Returns:
+        str: 可直接交给 executemany 的 SQL
+    """
+    import sqlite3
+    cols = ', '.join(KLINE_DATA_COLS)
+    placeholders = ', '.join('?' for _ in KLINE_DATA_COLS)
+    if sqlite3.sqlite_version_info >= (3, 24, 0):
+        sets = ', '.join(f'{c}=excluded.{c}' for c in KLINE_UPDATABLE_COLS)
+        return (f'INSERT INTO {table} ({cols}) VALUES ({placeholders}) '
+                f'ON CONFLICT(code, date) DO UPDATE SET {sets}')
+    return f'INSERT OR REPLACE INTO {table} ({cols}) VALUES ({placeholders})'
+
 
 class KlineUpdater:
     """K线数据增量更新器"""
 
+<<<<<<< HEAD
+=======
+    #: `update.lookback_days` 进程内缓存 ✓（None = 尚未加载 ✓）
+    _CONFIG_LOOKBACK_CACHE = None
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     def __init__(self, db_manager, stock_data_fetcher):
         """
         初始化K线更新器
@@ -93,6 +130,24 @@ class KlineUpdater:
             logger.info(f"目标更新日期: {target_date}")
             logger.info("=" * 60)
             
+<<<<<<< HEAD
+=======
+            # 幂等保护：若上次更新日期已达到或超过目标更新日期，说明数据已是最新，直接跳过拉取避免重复请求
+            if last_update_date and last_update_date >= target_date:
+                # 记录跳过原因，便于运维在日志中确认幂等生效
+                logger.info(f"上次更新日期({last_update_date})与目标更新日期({target_date})一致或更新，跳过K线更新（数据已是最新）")
+                # 返回成功且零增零更的结果，保证上层统计与状态正常
+                return {
+                    'success': True,  # 标记为成功，避免上层误判为失败
+                    'added': 0,       # 新增K线条数为 0
+                    'updated': 0,     # 更新K线条数为 0
+                    'failed': 0,      # 失败股票数为 0
+                    'rebuilt': 0,     # 除权重建次数为 0
+                    'message': f'K线数据已是最新（上次更新: {last_update_date}），跳过更新',
+                    'total_time': (datetime.now() - start_time).total_seconds()
+                }
+            
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             logger.info(f"开始更新K线数据: {len(stock_codes)} 只股票")
             
             # 第0步：检查数据源是否已准备好目标日期数据
@@ -124,7 +179,7 @@ class KlineUpdater:
                     'total_time': (datetime.now() - start_time).total_seconds()
                 }
             
-            logger.info(f"需要获取 {days_to_fetch} 天的K线数据")
+            logger.info(f"需要获取 {days_to_fetch} 个交易日的K线数据")
             
             # 第2步：分批批量处理（TickFlow API）
             logger.info(f"第2步: TickFlow 批量处理 {len(stock_codes)} 只股票 (批次大小: {batch_size})...")
@@ -153,6 +208,30 @@ class KlineUpdater:
 
                     logger.info(f"批次 {batch_num} 完成: 新增 {batch_result['added']} 条, 失败 {batch_result['failed']} 只, 耗时 {batch_elapsed:.1f}秒")
 
+<<<<<<< HEAD
+=======
+                    # 每批次后强制垃圾回收，释放内存给 Web 服务器
+                    gc.collect()
+
+                    # 清空 Session 连接池：避免累积的 TCP 连接被服务端限流/关闭
+                    # 每个批次使用独立的连接池，防止旧连接拖慢新请求
+                    # 对超过 8s/批的明显限流信号，重建连接池后可缓解 40%+
+                    if hasattr(self.kline_fetcher.stock_data_fetcher, 'clear_session_pool'):
+                        self.kline_fetcher.stock_data_fetcher.clear_session_pool()
+
+                    # 自适应批次间休眠：随批次推进逐渐增加延迟
+                    # 前 20% 批次：2s → 中段：3s → 后段：5s，避免连续轰炸触发严格限流
+                    if batch_num < total_batches:
+                        progress_ratio = batch_num / total_batches
+                        if progress_ratio < 0.2:
+                            sleep_time = 2.0
+                        elif progress_ratio < 0.5:
+                            sleep_time = 3.0
+                        else:
+                            sleep_time = 5.0
+                        time.sleep(sleep_time)
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 except Exception as e:
                     logger.warning(f"批次 {batch_num} TickFlow 处理失败: {str(e)}")
                     self.stats['failed'] += len(batch_codes)
@@ -331,35 +410,84 @@ class KlineUpdater:
         result = boards['主板'] + boards['创业板'] + boards['科创板']
         return result
 
+<<<<<<< HEAD
+=======
+    def _get_configured_lookback_days(self) -> int:
+        """读取 `config/config.yaml → update.lookback_days` ✓（默认 0 = 不干预 ✓）
+
+        【2026-09-25 修复】该配置此前**从未被引用** ✗（"配置失联"✗）。
+        现作为 K 线取数窗口的**下界** ✓：仅当它大于"按日期差推导"的值时才抬升 ✓，
+        因此**不改变**正常增量的行为 ✓，只在需要人为扩大回看时生效 ✓。
+
+        Returns:
+            int: 配置的回看天数（读不到/非法 → 0 ✓，调用方跳过 ✓）
+        """
+        if KlineUpdater._CONFIG_LOOKBACK_CACHE is not None:
+            return KlineUpdater._CONFIG_LOOKBACK_CACHE
+        val = 0
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
+            if cfg_path.exists():
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) or {}
+                raw = (data.get('update') or {}).get('lookback_days')
+                if raw is not None:
+                    val = max(0, int(raw))
+        except Exception as e:
+            logger.warning(f"读取 update.lookback_days 失败（按 0 处理，不影响主流程）: {e}")
+        KlineUpdater._CONFIG_LOOKBACK_CACHE = val
+        if val:
+            logger.debug(f"update.lookback_days = {val} 个交易日（窗口下界 ✓）")
+        return val
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     def _calculate_days_to_fetch(self, last_update_date: str, target_date: str) -> int:
         """
-        计算需要获取的天数
-        
+        计算需要获取的K线天数（按交易日计算，非自然日）
+
+        TickFlow API 的 count 参数代表返回的 K 线条数，
+        因此应使用交易日差距而非自然日差距。
+
         参数：
             last_update_date: 上次更新日期 (YYYY-MM-DD)
             target_date: 目标更新日期 (YYYY-MM-DD)
-        
+
         返回：
-            需要获取的天数
+            需要获取的交易日天数
         """
         try:
-            # 解析日期
-            last_date = datetime.strptime(last_update_date, '%Y-%m-%d')
-            target = datetime.strptime(target_date, '%Y-%m-%d')
-            
-            # 计算天数差
-            days_diff = (target - last_date).days
-            
-            # 为了确保获取到所有新数据，多获取2天，最小获取3天
-            days_to_fetch = max(days_diff + 2, 3)
-            
-            logger.debug(f"上次更新日期: {last_update_date}, 目标日期: {target_date}, 需要获取: {days_to_fetch} 天")
-            
+            from utils.trade_date_utils import get_trading_days_between
+
+            # 计算目标日期到上次更新日之间的交易日差距
+            trading_days_diff = get_trading_days_between(last_update_date, target_date)
+
+            # +2 个交易日缓冲，最少 3 个交易日
+            days_to_fetch = max(trading_days_diff + 2, 3)
+
+            # 【2026-09-25 修复】接入 `update.lookback_days` ✓（此前该配置**从未被读取** ✗）
+            #   语义：作为**下界（地板值）** ✓ —— 与"按日期差推导"取 max ✓：
+            #     · 正常增量：日期差推导值通常更大 ✓（配置不影响 ✓，行为不变 ✓）
+            #     · 需要**故意回看重采**（如补缺口/核对数据 ✓）：调大该值即可 ✓
+            #   同时统一"滚动重采最近 N 个交易日"的口径（与资金流/事件窗口一致 ✓）
+            configured = self._get_configured_lookback_days()
+            if configured and configured > days_to_fetch:
+                logger.info(
+                    f"K线窗口按下界配置抬升: {days_to_fetch} → {configured} 个交易日 "
+                    f"(update.lookback_days)")
+                days_to_fetch = configured
+
+            logger.debug(
+                f"上次更新日期: {last_update_date}, 目标日期: {target_date}, "
+                f"交易日差距: {trading_days_diff}, 需要获取: {days_to_fetch} 个交易日"
+            )
+
             return days_to_fetch
-        
+
         except Exception as e:
             logger.error(f"计算需要获取的天数失败: {str(e)}")
-            # 默认获取30天
+            # 默认获取30个交易日
             return 30
     
     def _fetch_and_save_batch_concurrent(self, batch_codes: List[str], days: int) -> Dict:
@@ -367,7 +495,11 @@ class KlineUpdater:
         【TickFlow 版】使用 TickFlow 批量 API 一次获取一批股票的K线数据并批量保存
 
         TickFlow API 成功但个别股票无数据 → 正常（不降级），仅标记为 failed
+<<<<<<< HEAD
         TickFlow API 失败（限流/网络）→ 降级到腾讯财经逐只获取
+=======
+        TickFlow API 失败（限流/网络）→ 降级到腾讯财经批量并发获取（2线程，0.3s间隔）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         参数：
             batch_codes: 股票代码列表
@@ -388,6 +520,7 @@ class KlineUpdater:
                 days=days
             )
 
+<<<<<<< HEAD
             # TickFlow API 失败时，降级到腾讯财经逐只获取
             if not api_ok:
                 logger.warning(f"TickFlow API 失败，降级到腾讯财经逐只获取 {len(batch_codes)} 只...")
@@ -400,6 +533,23 @@ class KlineUpdater:
                             kline_data[code] = df
                     except Exception as e:
                         logger.debug(f"腾讯财经降级获取 {code} 失败: {e}")
+=======
+            # TickFlow API 失败时，降级到腾讯财经批量并发获取
+            if not api_ok:
+                logger.warning(f"TickFlow API 失败，降级到腾讯财经批量获取 {len(batch_codes)} 只...")
+                # 仅获取 kline_data 中没有的股票
+                missing_codes = [c for c in batch_codes if c not in kline_data]
+                if missing_codes:
+                    # days 换算年份（腾讯财经按年份取历史），最少取 1 年
+                    years = max(1, days // 250 + 1)
+                    tencent_results = self.stock_data_fetcher._fetch_stock_batch_tencent(
+                        missing_codes, years=years, concurrency=2
+                    )
+                    # 腾讯财经返回全量历史，截取最近 days 天
+                    for code, df_full in tencent_results.items():
+                        if df_full is not None and len(df_full) > 0:
+                            kline_data[code] = df_full.tail(days).copy()
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 logger.info(f"腾讯财经降级补充: {len(kline_data)}/{len(batch_codes)} 只有数据")
 
             # 批量保存到数据库
@@ -423,6 +573,13 @@ class KlineUpdater:
                 # 统计最终无数据的股票（TickFlow无数据 + 降级也无数据）
                 final_missing = len([c for c in batch_codes if c not in kline_data])
                 failed += final_missing
+<<<<<<< HEAD
+=======
+
+                # 保存并统计完成后释放 kline_data 字典中的 DataFrame 引用
+                kline_data.clear()
+                gc.collect()
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             else:
                 # 全部获取失败
                 failed = len(batch_codes)
@@ -521,11 +678,9 @@ class KlineUpdater:
         
         try:
             # UPSERT SQL 语句
-            upsert_sql = """
-            INSERT OR REPLACE INTO stock_kline 
-            (code, date, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """
+            # 【2026-09-25 修复】改为"仅更新行情列"的 UPSERT ✓ —— 原 INSERT OR REPLACE
+            #   会把 market_cap / K / D / J / created_date 等未列出列静默重置为空 ✗
+            upsert_sql = kline_upsert_sql('stock_kline')
             
             # 确定成交量列名：优先使用volume，其次使用vol
             volume_col = 'volume' if 'volume' in df_kline.columns else 'vol'
@@ -560,12 +715,12 @@ class KlineUpdater:
                 logger.error(f"准备 {stock_code} K线数据失败: {str(e)}")
                 return 0, 0
             
-            # 使用原生executemany批量保存所有记录，大幅提升性能
+            # 使用原生executemany批量保存所有记录
+            # 注意：外层已由 _fetch_and_save_batch_concurrent 包裹事务，此处无需再开事务
             if records_to_save:
-                with self.db_manager.transaction():
-                    conn = self.db_manager.connect()
-                    cursor = conn.cursor()
-                    cursor.executemany(upsert_sql, records_to_save)
+                conn = self.db_manager.connect()
+                cursor = conn.cursor()
+                cursor.executemany(upsert_sql, records_to_save)
                 added = len(records_to_save)
             
             return added, updated
@@ -629,6 +784,14 @@ class KlineUpdater:
             result['factor_changes'] = check_result.get('factor_changes', {})
             logger.warning(f"【除权检测】检测到 {len(check_result['exdividend_stocks'])} 只股票发生除权")
             logger.warning(f"【除权检测】检测时间段：{start_date if start_date else '前一交易日'} ~ {trade_date}")
+<<<<<<< HEAD
+=======
+            # 区间内除权股票偏多时给出提示（重建为逐只重取多年历史，耗时较长）
+            if len(check_result['exdividend_stocks']) > 50:
+                logger.warning(
+                    "【除权检测】区间内除权股票较多（>50 只），重建将逐只重取多年历史、耗时较长；"
+                    "建议保持每日更新，避免长时间漏跑后一次性补建")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             # 逐只股票打印详细除权信息
             for stock_code in check_result['exdividend_stocks']:
                 changes = check_result.get('factor_changes', {}).get(stock_code, [])
@@ -697,6 +860,22 @@ class KlineUpdater:
 
             added, updated = self._save_kline_records_batch(stock_code, df_history)
             logger.info(f"【历史重建】{stock_code} 保存新数据：新增 {added} 条，更新 {updated} 条")
+<<<<<<< HEAD
+=======
+
+            # ---------- 【2026-09-27 §5.3 覆盖矩阵】重建后**必须补算 ADX** ✗✓ ----------
+            #   上面 `DELETE FROM stock_kline WHERE code=?`(L812 ✓) + 重写 ✗ ⇒ 该股 `adx` **全丢** ✗
+            #   ⚠️ **不能**指望"日更第 5.5 步兜底"✗ —— 本函数在**除权检测**流程里跑 ✓，
+            #      其调用方**未必**随后跑日更 ✗ ⇒ 必须**就地**补算 ✓（幂等 ✓；失败只告警 ✓）
+            try:
+                from utils.stock_adx import update_codes
+                _adx = update_codes(self.db_manager.connect(), [stock_code])
+                logger.info(f"【历史重建】{stock_code} 已补算 ADX：{_adx['updated_rows']} 行"
+                            + (f"（失败 ✗: {_adx['failed']}）" if _adx['failed'] else ""))
+            except Exception as _e:
+                logger.warning(f"【历史重建】{stock_code} ADX 补算失败 ✗"
+                               f"（请稍后全量补算 ✓）: {_e}")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             return True
 
         except Exception as e:

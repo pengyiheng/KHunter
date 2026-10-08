@@ -107,6 +107,7 @@ from main import QuantSystem
 import threading
 from utils.selection_record_manager import SelectionRecordManager
 from utils.ranking_manager import RankingManager
+from scheduler.feishu_commander import get_commander
 from utils.db_initializer import init_databases_if_needed
 from utils.stock_filter import StockFilter
 from utils.data_collection_service import get_data_collection_service
@@ -123,6 +124,28 @@ app = Flask(__name__,
 
 # 配置JSON编码器
 app.json_encoder = NumpyEncoder
+
+# ★★★★【2026-10-05 用户要求 ✓】**模板自动重载** ✗→✓ ★★★★
+#   事故 ✗✓（用户排查"回测参数保存不成功"✓ 时实测发现 ✓）：
+#     · 本进程**没设** `TEMPLATES_AUTO_RELOAD` ✗，而 `run_web_server(debug=False)` ✓
+#       ⇒ Flask 的该项回落到 `app.debug` ✓ = **False** ✗
+#       ⇒ **Jinja 把模板编译结果缓存住** ✗ ⇒ 改了 `web/templates/*.html` 后
+#         **必须重启服务**才生效 ✗（**只刷新浏览器不够** ✗✓）；
+#     · 铁证 ✓：直连运行中的服务 ✓，它吐出的 HTML 里前端版本是 `app.js?v=33` ✗，
+#       而磁盘上早已是 `v=34/35` ✓ ⇒ 模板读的确实是**缓存**✗✓；
+#     · 后果 ✗：用户反复以为"保存不成功 / 改动没生效"✗ —— 其实是**页面根本没更新** ✓，
+#       排查时会一路去怀疑后端/接口/缓存版本号 ✗（本次就绕了很久 ✓）。
+#   ⇒ 现显式打开 ✓（`debug` **仍保持 False** ✗✓ —— 绝不为热重载去开调试器 ✗：
+#     那会启用 Werkzeug 调试器 = **任意代码执行**风险 ✗，且会带动 Python 模块重载 ✗）。
+#   ⚠️ 代价 ✓：每次渲染多一次 `stat` 模板文件（微秒级 ✓，可忽略 ✓）。
+#   ⚠️ 覆盖范围 ✓：**只**管模板（`.html` ✓）；`.py` 改动**仍需手动重启** ✗（这是刻意的 ✓）；
+#     静态资源（`.js/.css`）本就按磁盘提供 ✓，其缓存由模板里的 `?v=NN` **统一版本号**控制 ✓
+#     （见 `web/templates/index.html` 顶部规则 ✓）。
+#   ⚠️ 回归锁 ✓：`test_template_autoreload.py` ✓（含"`debug` 必须仍为 False"✗✓）。
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+# ⚠️ 双保险 ✗✓：`config` 是 Flask 读取项 ✓，而**真正生效**的是 Jinja 环境上的
+#   `auto_reload` ✓ ⇒ 两处都显式置位 ✓（历史上有人只设 config 却被别处覆盖过 ✓）。
+app.jinja_env.auto_reload = True
 
 # 初始化SocketIO（配置长连接参数以支持长时间的回测任务）
 socketio = SocketIO(
@@ -311,6 +334,7 @@ def get_stocks():
 
 
 def get_latest_trading_date() -> str:
+<<<<<<< HEAD
     """获取最近交易日（考虑收盘时间）
     
     如果今天是交易日且已收盘（15:00之后），返回今天
@@ -326,6 +350,23 @@ def get_latest_trading_date() -> str:
         return today_str
     else:
         return get_previous_trading_day(today_str)
+=======
+    """获取最近交易日（纯时间判断，与 strategy_runner.get_working_date 逻辑一致）
+    
+    1. 今日是交易日且已收盘(≥15:00) → 今日
+    2. 今日是交易日但未收盘 → 前一交易日
+    3. 今日非交易日 → 前一交易日
+    """
+    today = datetime.now()
+    today_str = today.strftime('%Y-%m-%d')
+
+    # 判断是否已收盘（15:00之后）
+    if today.hour >= 15 and is_trading_day(today_str):
+        return today_str
+
+    # 未收盘或非交易日，返回前一交易日
+    return get_previous_trading_day(today_str)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 
 @app.route('/api/dashboard/my-golden-stocks')
@@ -496,15 +537,8 @@ def get_industry_stocks():
         if not industry:
             return jsonify({'success': False, 'error': '行业参数不能为空'})
         
-        # 获取最近的选股日期
-        date_result = db_manager.query("SELECT DISTINCT selection_date FROM stock_selection_record ORDER BY selection_date DESC LIMIT 1")
-        if not date_result:
-            return jsonify({
-                'success': True,
-                'stocks': []
-            })
-        
-        score_date = date_result[0]['selection_date']
+        # 获取最近交易日（遵循收盘规则 + DB校验）
+        score_date = get_latest_trading_date()
         
         # 获取指定行业的股票，按评分排序
         rows = db_manager.query("""
@@ -581,15 +615,8 @@ def get_area_stocks():
         if not area:
             return jsonify({'success': False, 'error': '板块参数不能为空'})
         
-        # 获取最近的选股日期
-        date_result = db_manager.query("SELECT DISTINCT selection_date FROM stock_selection_record ORDER BY selection_date DESC LIMIT 1")
-        if not date_result:
-            return jsonify({
-                'success': True,
-                'stocks': []
-            })
-        
-        score_date = date_result[0]['selection_date']
+        # 获取最近交易日（遵循收盘规则 + DB校验）
+        score_date = get_latest_trading_date()
         
         # 获取指定板块的股票，按评分排序
         rows = db_manager.query("""
@@ -655,6 +682,91 @@ def get_area_stocks():
         return jsonify({'success': False, 'error': str(e)})
 
 
+# ==================== 股票收藏夹相关接口 ====================
+# 注意：收藏相关路由必须放在 /api/stock/<code> 之前，避免被 <code> 通配拦截
+
+@app.route('/api/stock/favorites', methods=['GET'])
+def get_stock_favorites():
+    """获取收藏股票列表接口"""
+    try:
+        favorites = db_manager.get_favorites()
+        return jsonify({'success': True, 'data': favorites})
+    except Exception as e:
+        logger.error(f"获取收藏列表失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/stock/favorite', methods=['POST'])
+def add_stock_favorite():
+    """收藏股票接口
+    接收 stock_code，自动从选股历史获取最近一次选股策略和选入日期
+    """
+    try:
+        data = request.get_json(force=True) or request.form
+        stock_code = data.get('stock_code', '').strip()
+        if not stock_code:
+            return jsonify({'success': False, 'error': '股票代码不能为空'})
+
+        # 从 stock_basic 获取股票名称
+        stock_name = ''
+        name_rows = db_manager.query(
+            "SELECT name FROM stock_basic WHERE code = ? LIMIT 1", (stock_code,)
+        )
+        if name_rows:
+            stock_name = name_rows[0].get('name', '')
+
+        # 从选股历史获取最近一次选股策略和选入日期
+        sel_record = db_manager.get_latest_selection_record(stock_code)
+        strategy_name = sel_record.get('strategy_name', '')
+        selection_date = sel_record.get('selection_date', '')
+
+        # 保存收藏
+        ok = db_manager.add_favorite(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            strategy_name=strategy_name,
+            selection_date=selection_date,
+        )
+        if ok:
+            return jsonify({
+                'success': True,
+                'data': {
+                    'stock_code': stock_code,
+                    'stock_name': stock_name,
+                    'strategy_name': strategy_name,
+                    'selection_date': selection_date,
+                },
+            })
+        return jsonify({'success': False, 'error': '收藏失败'})
+    except Exception as e:
+        logger.error(f"收藏股票失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/stock/favorite/<code>', methods=['GET'])
+def check_stock_favorite(code):
+    """检查股票是否已收藏接口"""
+    try:
+        favorited = db_manager.is_favorited(code)
+        return jsonify({'success': True, 'favorited': favorited})
+    except Exception as e:
+        logger.error(f"检查收藏状态失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/stock/favorite/<code>', methods=['DELETE'])
+def remove_stock_favorite(code):
+    """取消收藏股票接口"""
+    try:
+        ok = db_manager.remove_favorite(code)
+        if ok:
+            return jsonify({'success': True})
+        return jsonify({'success': False, 'error': '取消收藏失败'})
+    except Exception as e:
+        logger.error(f"取消收藏股票失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/stock/<code>')
 def get_stock_detail(code):
     """获取单只股票详情"""
@@ -706,6 +818,7 @@ def get_stock_detail(code):
         from utils.technical import KDJ
         kdj_df = KDJ(df, n=9, m1=3, m2=3)
         
+<<<<<<< HEAD
         # 转换为列表格式，返回最近100条数据
         data = []
         # 取最后100条（最新的数据）
@@ -713,7 +826,39 @@ def get_stock_detail(code):
         for i in range(start_idx, len(df)):
             row = df.iloc[i]
             kdj_row = kdj_df.iloc[i]
+=======
+        # 【2026-09-20】九转(TD)标注：在**完整历史**上算序列（避免 Setup 前置被截断），
+        #   再把结果按日期挂到每根 K 线行上（前端零签名改动即可绘制 1..9）。
+        td9_map = {}
+        try:
+            from utils.td_sequential import compute_td_marks
+            # 【2026-09-20】only_complete=False：同时输出"**进行中**"的序列（未走到 9），
+            #   供前端展示"末端在最后一根 K 线且计数 >= 7"的**即将完成九转** ✓
+            #   （策略侧仍用默认 only_complete=True ✓ 行为零变化 ✓）
+            _res = compute_td_marks(df.iloc[::-1].reset_index(drop=True),
+                                    only_complete=False)                    # 倒序喂入
+            for _m in _res.get('marks', []):
+                _slot = td9_map.setdefault(_m['date'], {})
+                _slot[_m['type']] = _m['seq']
+                if _m.get('cancelled'):
+                    _slot[_m['type'] + '_cancelled'] = True
+            td9_meta = {'bars_used': _res.get('bars', 0),
+                        'buy_countdown_complete_on': _res.get('buy_countdown_complete_on'),
+                        'sell_countdown_complete_on': _res.get('sell_countdown_complete_on')}
+        except Exception as e:
+            logger.warning(f"九转标注计算失败（忽略，不影响K线）: {e}")
+            td9_meta = {}
+
+        # 转换为列表格式，返回最近 120 条数据（2026-09-20 由 100 扩到 120）
+        data = []
+        start_idx = max(0, len(df) - 120)
+        for i in range(start_idx, len(df)):
+            row = df.iloc[i]
+            kdj_row = kdj_df.iloc[i]
+            _d = row['date'].strftime('%Y-%m-%d')
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             data.append({
+                'td9': td9_map.get(_d),
                 'date': row['date'].strftime('%Y-%m-%d'),
                 'open': round(row['open'], 2) if pd.notna(row['open']) else None,
                 'high': round(row['high'], 2) if pd.notna(row['high']) else None,
@@ -727,7 +872,8 @@ def get_stock_detail(code):
                 'J': round(kdj_row['J'], 2) if pd.notna(kdj_row['J']) else None
             })
         
-        return jsonify({'success': True, 'code': code, 'data': data})
+        return jsonify({'success': True, 'code': code, 'data': data,
+                        'td9_meta': td9_meta})
     except Exception as e:
         logger.error(f"获取股票详情失败: {e}")
         return jsonify({'success': False, 'error': str(e)})
@@ -890,8 +1036,38 @@ def run_selection():
             func_logger.error(f"加载股票数据失败: {str(e)}")
             return jsonify({'success': False, 'error': f'加载股票数据失败: {str(e)}'})
         
-        # 构建股票数据字典
+        # 选股日归一化规则：
+        #   1. 交易日收盘后(>15:00) → 当日（K线已生成）
+        #   2. 交易日交易时段(9:30-15:00) → 前一个交易日（K线未生成）
+        #   3. 非交易日(周末/节假日) → 前一个交易日
+        #   4. 历史交易日 → 保持当日（数据库中已有K线）
+        from utils.trade_date_utils import is_trading_day, get_previous_trading_day
+        if end_date:
+            now = dt.now()
+            today_str = now.strftime('%Y-%m-%d')
+            # 仅当 end_date 为今天且在交易时段内(9:30-15:00)，才回退
+            # 15:00 收盘时刻 K 线未生成也需回退，15:01 起视为收盘后
+            in_trading_session = (
+                end_date == today_str
+                and (now.hour < 15 or (now.hour == 15 and now.minute == 0))
+            )
+            need_rollback = False
+            rollback_reason = ""
+            if in_trading_session:
+                need_rollback = True
+                rollback_reason = "交易时段"
+            elif not is_trading_day(end_date):
+                need_rollback = True
+                rollback_reason = "非交易日"
+
+            if need_rollback:
+                original = end_date
+                end_date = get_previous_trading_day(end_date)
+                func_logger.info(f"选股日 {original}({rollback_reason}) → 回退至 {end_date}")
+
+        # 构建股票数据字典（批量加载优化：2次SQL替代N次逐只查询）
         try:
+<<<<<<< HEAD
             func_logger.warning(f"⚠️ 开始加载股票数据, end_date={end_date}")
             stock_data = {}
             skip_count = 0
@@ -921,6 +1097,58 @@ def run_selection():
             
             load_time = (dt.now() - load_start_time).total_seconds()
             func_logger.info(f"成功加载 {len(stock_data)} 只股票的K线数据，跳过 {skip_count} 只，总耗时 {load_time:.1f}秒")
+=======
+            import pandas as pd
+            load_start_time = dt.now()
+            func_logger.warning(f"⚠️ 开始批量加载股票数据, end_date={end_date}")
+
+            # 第1步：一次SQL查出end_date当天有K线的股票（退市/停牌自动排除）
+            step1_start = dt.now()
+            active_codes = db_manager.get_active_stock_codes(end_date)
+            step1_time = (dt.now() - step1_start).total_seconds()
+            no_kline_count = len(stock_codes) - len(active_codes)
+            func_logger.info(
+                f"[第1步] 选股日{end_date}有效股票: {len(active_codes)} 只, "
+                f"无K线(退市/停牌): {no_kline_count} 只, 耗时 {step1_time:.1f}秒")
+
+            if not active_codes:
+                func_logger.warning("没有可用的股票数据")
+                return jsonify({'success': True, 'data': {}, 'time': dt.now().strftime('%Y-%m-%d %H:%M:%S')})
+
+            # 第2步：SQL只加载活跃股票（选股日有K线的5172只）近200天数据
+            step2_start = dt.now()
+            from datetime import timedelta
+            start_date = (dt.strptime(end_date, '%Y-%m-%d') - timedelta(days=200)).strftime('%Y-%m-%d')
+            all_kline_df = db_manager.read_all_stocks_kline(start_date, end_date, codes=active_codes)
+            step2_time = (dt.now() - step2_start).total_seconds()
+
+            # 第3步：按code分组构建stock_data字典
+            step3_start = dt.now()
+            stock_data = {}
+            discarded_by_rows = 0  # 数据不足30行被丢弃的股票数
+            if not all_kline_df.empty:
+                # 按code分组（SQL已限定active_codes，无需再过滤）
+                grouped = all_kline_df.groupby('code')
+                for code, group_df in grouped:
+                    if len(group_df) < 30:
+                        discarded_by_rows += 1
+                        continue
+                    # 保持与read_stock相同的格式：date为列，按日期降序排列
+                    group_df = group_df.copy()
+                    group_df['date'] = pd.to_datetime(group_df['date'])
+                    group_df = group_df.sort_values('date', ascending=False)
+                    stock_name = stock_names.get(code, '未知')
+                    stock_data[code] = (stock_name, group_df)
+            step3_time = (dt.now() - step3_start).total_seconds()
+
+            load_time = (dt.now() - load_start_time).total_seconds()
+            func_logger.info(
+                f"[结果] 最终加载 {len(stock_data)} 只股票 (全市场{len(stock_codes)}只 "
+                f"→ 选股日有效{len(active_codes)}只 → 数据充足{len(stock_data)}只, "
+                f"丢弃{discarded_by_rows}只(<30行)), "
+                f"步骤耗时：SQL-1={step1_time:.1f}s SQL-2={step2_time:.1f}s 分组={step3_time:.1f}s, "
+                f"总耗时 {load_time:.1f}秒")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         except Exception as e:
             func_logger.error(f"构建股票数据字典失败: {str(e)}")
             return jsonify({'success': False, 'error': f'构建股票数据字典失败: {str(e)}'})
@@ -960,7 +1188,7 @@ def run_selection():
                     total_stocks = len(stock_data)
                     for idx, (code, (name, df)) in enumerate(stock_data.items()):
                         try:
-                            result = strategy.analyze_stock(code, name, df)
+                            result = strategy.analyze_stock(code, name, df, selection_date=end_date)
                             if result:
                                 success_count += 1
                                 # 从 stock_names 字典中获取股票名称
@@ -1056,7 +1284,7 @@ def run_selection():
                     
                     for idx, (code, (name, df)) in enumerate(stock_data.items()):
                         try:
-                            result = strategy.analyze_stock(code, name, df)
+                            result = strategy.analyze_stock(code, name, df, selection_date=end_date)
                             if result:
                                 # 从 stock_names 字典中获取股票名称
                                 fallback_name = stock_names.get(code, '未知')
@@ -1554,9 +1782,18 @@ def get_timing_strategies():
         # 基础择时策略列表
         timing_strategies = [
             {'name': 'turtle', 'display_name': '海龟策略'},
+<<<<<<< HEAD
             {'name': 'support', 'display_name': '支撑位策略'},
             {'name': 'rsi', 'display_name': 'RSI策略'},
             {'name': 'bollinger', 'display_name': '布林带策略'}
+=======
+            {'name': 'low_turtle', 'display_name': '低位海龟策略'},
+            {'name': 'turtle_plus', 'display_name': '海龟plus'},
+            {'name': 'support', 'display_name': '支撑位策略'},
+            {'name': 'rsi', 'display_name': 'RSI策略'},
+            {'name': 'bollinger', 'display_name': '布林带策略'},
+            {'name': 'uptrend_pullback', 'display_name': '趋势回调缩量策略'}
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         ]
         logger.info(f"基础择时策略列表: {[s['display_name'] for s in timing_strategies]}")
         
@@ -1907,7 +2144,10 @@ def get_update_status():
 
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 @app.route('/api/selection-history', methods=['GET'])
 def get_selection_history():
@@ -1977,7 +2217,6 @@ def get_selection_history():
 
 
 # ==================== 股票分析相关路由 ====================
-
 
 
 
@@ -2516,18 +2755,21 @@ def start_update():
     
     请求体：
         {
-            'updateTypes': ['basic_data', 'history_data', ...]
+            'updateTypes': ['basic_data', 'history_data', ...],
+            'force': true      # 可选：手动重新更新（不考虑当天是否已更新过）
         }
     
     返回：
         更新任务信息
     """
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         update_types = data.get('updateTypes', None)
+        # 前端"更新数据"按钮传 force=True：忽略"数据已是最新"的幂等跳过，重新开始更新
+        force = bool(data.get('force', False))
         
         # 启动更新任务
-        result = data_collection_service.start_update(update_types)
+        result = data_collection_service.start_update(update_types, force=force)
         
         return jsonify({
             'success': result['success'],
@@ -2633,7 +2875,7 @@ def resume_update():
 @app.route('/api/data/update/last-update-time')
 def get_last_update_time():
     """
-    获取上次更新时间
+    获取上次更新时间（从本地文件读取）
     
     返回：
         {
@@ -2646,19 +2888,14 @@ def get_last_update_time():
     """
     try:
         # 获取交易时间验证器
-        from utils.trading_time_validator import TradingTimeValidator
-        from utils.db_manager import DBManager
+        from utils.trading_time_validator import TradingTimeValidator, UPDATE_LOG_DIR
         
-        # 创建数据库管理器
-        from utils.global_db import get_global_db
-        db_manager = get_global_db()
-        validator = TradingTimeValidator(db_manager)
+        validator = TradingTimeValidator()
         
         # 获取上次更新日期
         last_update_date = validator.get_last_update_date()
         
         if not last_update_date:
-            # 如果没有更新记录，返回默认值
             return jsonify({
                 'success': True,
                 'data': {
@@ -2667,14 +2904,17 @@ def get_last_update_time():
                 }
             })
         
-        # 查询该日期的更新时间
-        sql = "SELECT update_time FROM update_log WHERE update_date = ?"
-        result = db_manager.query_one(sql, (last_update_date,))
-        
-        if result:
-            last_update_time = result['update_time']
-        else:
-            last_update_time = f"{last_update_date} 00:00:00"
+        # 从本地文件读取更新时间
+        import json, os
+        log_file = os.path.join(UPDATE_LOG_DIR, f'update_log_{last_update_date}.json')
+        last_update_time = f"{last_update_date} 00:00:00"
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                last_update_time = data.get('update_time', last_update_time)
+            except Exception:
+                pass
         
         return jsonify({
             'success': True,
@@ -3083,6 +3323,49 @@ def get_latest_market_temperature():
         })
 
 
+<<<<<<< HEAD
+=======
+@app.route('/api/market-index-adx/trend', methods=['GET'])
+def get_market_index_adx_trend():
+    """市场指数 ADX 趋势（市场速览"温度"旁展示 + 下钻详情用 · 2026-09-20）
+
+    数据来源：`market_index_adx` 表（每日数据更新时由 `MarketIndexADX().calculate()`
+    落库；标的为全A口径指数 000985.CSI，period=14）→ **无需实时计算**。
+
+    请求参数：
+        days: 天数，默认 30（约近一个月交易日）
+
+    返回：
+        data.trend: [{trade_date, adx, plus_di, minus_di, trend_strength, ...}]（升序）
+        data.latest_adx / latest_strength / latest_trade_date / avg_adx / max_adx / min_adx
+    """
+    try:
+        from trading.market_index_adx_dao import MarketIndexADXDAO
+        days = int(request.args.get('days', 30))
+        days = max(1, min(days, 250))
+        # ★★【2026-10-05 修复 ✓】**必须显式指定指数** ✗→✓ ★★
+        #   事故 ✗✓：本处原先调 `get_trend(days)` **不传 `index_code`** ✗ ⇒ DAO 走
+        #     "跨**全部**指数、按日期倒序 LIMIT N" ✗ —— 2026-10-05 库里**新增**创业板指与
+        #     科创50 后 ✗ ⇒ **同一天有 3 行** ✗ ⇒ SQLite 返回**任意一行** ✗✓
+        #     （实测：首页卡片显示 **17.3** ✗ = **科创50** 2026-09-30 的值 ✗，
+        #      而卡片文案写的是"全A指数 000985.CSI"✗ ⇒ **数字与标签不符** ✗✓）。
+        #   ⚠️ 更隐蔽的危害 ✗：`days=30` 的"近 1 月"里**每天混着 3 个指数** ✗
+        #     ⇒ 曲线 / 均值 / 最高 / 最低**全部不可信** ✗（而界面上毫无异常提示 ✗）。
+        #   ⇒ 修法 ✓：**显式指定指数** ✓，且默认与大盘闸门/仓位上限**同一指数** ✗✓
+        #     （`resolve_index_adx_code()` ✓ = `index_adx_code` 配置 > `regime_router.yaml` ✓）
+        #     ⇒ "卡片看到的" 与 "回测按它判档的" **必然是同一个指数** ✓✓。
+        #   ⚠️ 允许 `?code=` 显式覆盖 ✓（供页面/排查看别的指数 ✓）。
+        from trading.index_adx_filter import resolve_index_adx_code
+        code = (request.args.get('code') or '').strip() or resolve_index_adx_code()
+        result = MarketIndexADXDAO().get_trend(days, code)
+        result['index_code'] = code                    # ★ 回传实际指数 ✓ 供前端标注 ✓
+        return jsonify({'success': True, 'data': clean_data_for_json(result)})
+    except Exception as e:
+        logger.error(f"获取市场指数ADX趋势失败: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 @app.route('/api/market-temperature/trend', methods=['GET'])
 def get_market_temperature_trend():
     """
@@ -3364,6 +3647,11 @@ def get_strategy_runner(auto_init=False):
             from trading.strategy_runner import StrategyRunner
             logger.info("开始初始化策略运行器...")
             strategy_runner = StrategyRunner()
+<<<<<<< HEAD
+=======
+            # 初始化当日数据（只在此处执行一次，后续 API 不再重复调用）
+            strategy_runner.initialize_daily_data()
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             logger.info("策略运行器初始化成功")
         except Exception as e:
             logger.error(f"策略运行器初始化失败: {str(e)}")
@@ -3375,7 +3663,10 @@ def get_strategy_runner(auto_init=False):
 
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 @app.route('/api/strategy/run-batch', methods=['POST'])
 def run_strategy_batch():
     """
@@ -3410,6 +3701,7 @@ def run_strategy_batch():
             if backtest_config:
                 config = backtest_config
         
+<<<<<<< HEAD
         # 检查是否有任务使用海龟策略，从配置文件读取海龟策略参数（与 run_strategy 保持一致）
         has_turtle = any(task.get('timing_strategy') == 'turtle' for task in tasks)
         if has_turtle:
@@ -3451,6 +3743,38 @@ def run_strategy_batch():
                 'mode': 'realtime'
             })
         
+=======
+        # 海龟类策略（海龟/低位海龟/海龟plus）参数注入：按策略名写入 config['timing_params']，
+        #   与 /backtest/run、自适应回测、实盘运行器同一口径（统一由
+        #   trading.timing_strategies.build_turtle_family_params 合并）。
+        #   2026-09-16 修复：原实现只认 'turtle' 且写顶层键 → 海龟plus 回退默认预设(10/5/10)，
+        #   与 config/strategy_params.yaml（12/6/12）不一致，回测结果无法代表配置口径。
+        # 【2026-09-23 合并】海龟类参数统一走**唯一读取入口** ✓（yaml 只保留一个配置块）
+        from trading.timing_strategies import (
+            TURTLE_FAMILY_STRATEGIES, load_turtle_family_params)
+        _timing_names = {str(t.get('timing_strategy') or '') for t in tasks}
+        _turtle_tasks = [n for n in TURTLE_FAMILY_STRATEGIES if n in _timing_names]
+        if _turtle_tasks:
+            try:
+                from utils.strategy_config_manager import StrategyConfigManager
+                config_manager = StrategyConfigManager()
+                _timing_params = dict(config.get('timing_params') or {})
+                for _name in _turtle_tasks:
+                    _params = load_turtle_family_params(_name, config_manager)
+                    # 调用方显式传入的同名键优先（不覆盖）
+                    _timing_params[_name] = {**_params, **(_timing_params.get(_name) or {})}
+                config['timing_params'] = _timing_params
+                # 单一海龟类策略时同时写顶层键（运行器/引擎优先读顶层配置）
+                if len(_turtle_tasks) == 1:
+                    config.update({k: v for k, v in
+                                   _timing_params[_turtle_tasks[0]].items() if v is not None})
+            except Exception as e:
+                logger.warning(f"读取海龟类策略配置失败，忽略注入（沿用调用方参数）: {str(e)}")
+        
+        # 执行批量任务（内部已通过 _save_batch_task_config 保存 task_history）
+        results = runner.run_strategies_batch(tasks, config)
+        
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return jsonify(results)
     except Exception as e:
         logger.error(f"批量运行策略失败: {str(e)}")
@@ -3475,6 +3799,11 @@ def initialize_strategy_runner():
         from trading.strategy_runner import StrategyRunner
         logger.info("手动初始化策略运行器...")
         strategy_runner = StrategyRunner()
+<<<<<<< HEAD
+=======
+        # 初始化当日数据
+        strategy_runner.initialize_daily_data()
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         logger.info("策略运行器初始化成功")
         
         return jsonify({"success": True, "message": "策略运行器初始化成功"})
@@ -3503,9 +3832,12 @@ def get_strategy_status():
         # 获取当前工作日期
         working_date = runner.get_working_date()
         
+<<<<<<< HEAD
         # 初始化当日数据（自动从最近有数据的交易日继承）
         runner.initialize_daily_data(working_date)
         
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 检查是否已处理
         processed = runner.check_if_processed(working_date)
         
@@ -3521,7 +3853,14 @@ def get_strategy_status():
             try:
                 with open(pool_file, 'r', encoding='utf-8') as f:
                     pool_data = json.load(f)
+<<<<<<< HEAD
                     selected_stocks = len(pool_data.get('pool', []))
+=======
+                    # 【2026-09-18】统计口径同样剔除非股票品种（标准券/质押券）
+                    from trading.strategy_runner import filter_non_stock_pool
+                    selected_stocks = len(filter_non_stock_pool(
+                        pool_data.get('pool', []), where='选股数量统计'))
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             except Exception as e:
                 logger.warning(f"读取股票池文件失败: {str(e)}")
         
@@ -3559,6 +3898,311 @@ def get_strategy_status():
         return jsonify({"success": False, "error": str(e)})
 
 
+<<<<<<< HEAD
+=======
+def _derive_available_cash(total_asset, market_value, fund_available_cash=0.0):
+    """按统一口径计算可用资金：总资产 − 证券市值（含 ETF）
+
+    与策略口径统一（portfolio['cash']，见 ptrade_feedback.build_portfolio）：
+    可用资金 = 总资产 − 股票市值 − ETF市值。
+
+    为什么不用 Fund 文件的「可用资金」列：该列在清算前会扣除未成交委托冻结资金，
+    低于真实可用余额 —— 2026-09-15 实盘例：Fund 列=27,425.82，真实可用=141,472.44
+    （= 总资产 338,087.44 − 证券市值 196,615）；若用于展示，会与策略/日志口径不一致。
+    数据异常（总资产 < 证券市值 → 反算为负）时回退 Fund 列并告警。
+
+    Args:
+        total_asset: PTrade Fund「总资产」
+        market_value: PTrade Fund「证券市值」（含 ETF）
+        fund_available_cash: Fund「可用资金」列（仅异常回退时使用）
+
+    Returns:
+        float：可用资金（2 位小数）
+    """
+    try:
+        cash = round(float(total_asset or 0) - float(market_value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+    if cash < 0:
+        logger.warning(
+            f"【资金口径】反算可用资金为负({cash})，总资产={total_asset}，"
+            f"证券市值={market_value}，回退 Fund 可用资金列")
+        return round(float(fund_available_cash or 0), 2)
+    return cash
+
+
+def _get_ptrade_fund_data(runner, working_date: str):
+    """从 PTrade 反馈（Fund 文件）读取总资产，并按统一口径反算可用资金
+
+    总资产取 Fund「总资产」列（权威值，含 ETF 市值）；
+    可用资金 = 总资产 − 证券市值（与策略口径 portfolio['cash'] 统一，
+    见 _derive_available_cash 的说明：Fund「可用资金」列清算前会扣除冻结资金、偏低）。
+    读取失败（如反馈文件缺失或解析异常）时返回 None，由调用方回退自算。
+
+    Args:
+        runner: 策略运行器（提供 main_config 以定位 feedback_dir）
+        working_date: 工作日期 YYYY-MM-DD
+
+    Returns:
+        dict {'available_cash': float, 'total_asset': float} 或 None
+    """
+    try:
+        # 延迟导入避免模块加载时的循环依赖
+        from trading.ptrade.ptrade_feedback import PTradeFeedbackHandler
+        # feedback_dir 由 main_config.ptrade.feedback_dir 指定（如 D:/ptrade/input，绝对路径直接使用）
+        main_config = getattr(runner, 'main_config', None)
+        handler = PTradeFeedbackHandler(
+            project_root=str(project_root), config=main_config)
+        # 工作日期 YYYY-MM-DD → 反馈日期 YYYYMMDD
+        feedback_date = working_date.replace('-', '')
+        fund = handler.read_fund(feedback_date)
+        total_asset = fund.get('total_asset')
+        if total_asset:
+            available_cash = _derive_available_cash(
+                total_asset, fund.get('market_value'), fund.get('available_cash'))
+            logger.info(
+                f"资金采用 PTrade 反馈值: 可用资金={available_cash}"
+                f"(=总资产{total_asset}-证券市值{fund.get('market_value')}), "
+                f"总资产={total_asset}, Fund列可用资金={fund.get('available_cash')} "
+                f"(日期 {feedback_date})")
+            return {
+                'available_cash': float(available_cash),
+                'total_asset': float(total_asset)
+            }
+    except Exception as e:
+        # 反馈文件缺失或解析失败时回退自算，不影响接口可用性
+        logger.warning(f"读取 PTrade 资金数据失败，将回退自算: {e}")
+    return None
+
+
+def _get_ptrade_total_asset(runner, working_date: str):
+    """兼容旧接口：从 PTrade 反馈读取总资产（内部调用 _get_ptrade_fund_data）"""
+    fund_data = _get_ptrade_fund_data(runner, working_date)
+    return fund_data.get('total_asset') if fund_data else None
+
+
+def _get_ptrade_snapshot_from_runner(runner, feedback_date: str):
+    """方案B：复用初始化同步（sync_portfolio_from_ptrade）落在 runner 内存的权威结果
+
+    页面加载 `GET /api/portfolio` 时在同一请求内会经历两步：
+      ① get_strategy_runner(auto_init=True) 触发初始化同步：解析 Fund+Hold 并写盘；
+      ② 展示分支 _get_portfolio_auto 又新建 handler 直读 Fund+Hold。
+    于是出现「进页面就解析两次」；策略跑完后前端刷新持仓还会再解析一次。
+
+    复用条件（任一不满足即返回 None，由调用方回退直读文件）：
+      - runner 已同步的 feedback_date 与本次一致（同一天）
+      - runner.portfolio 非空、内存总资产有效
+      - 反馈文件 mtime 与同步时一致（未被 PTrade 重新导出 → 快照仍新鲜）
+
+    Args:
+        runner: 策略运行器
+        feedback_date: 反馈日期 YYYYMMDD
+
+    Returns:
+        (holdings, available_cash, total_assets) 或 None（表示应直读文件）；
+        其中 available_cash 与策略口径一致（总资产 − 股票市值 − ETF市值），
+        不使用 Fund「可用资金」列（该列清算前会扣除未成交委托冻结资金、偏低）
+    """
+    if (getattr(runner, '_ptrade_synced_feedback_date', '') or '') != feedback_date:
+        return None
+    positions = getattr(runner, 'portfolio', None) or {}
+    if not positions:
+        return None
+    total_assets = getattr(runner, 'current_total_asset', None)
+    if not total_assets:
+        return None
+
+    # 反馈文件被重新导出（mtime 变化）→ 内存快照已过期，回退直读文件
+    from trading.ptrade.ptrade_feedback import feedback_files_stamp
+    recorded_stamp = getattr(runner, '_ptrade_feedback_stamp', None)
+    current_stamp = feedback_files_stamp(
+        getattr(runner, '_ptrade_feedback_dir', None), feedback_date)
+    if recorded_stamp and current_stamp and recorded_stamp != current_stamp:
+        logger.info("【前端-持仓】PTrade 反馈文件已更新，改直读文件（不复用内存快照）")
+        return None
+
+    holdings = []
+    for code, pos in positions.items():
+        if not isinstance(pos, dict):
+            continue
+        quantity = pos.get('quantity', 0) or 0
+        if quantity <= 0:
+            continue
+        holdings.append({
+            'stock_code': pos.get('stock_code') or code,
+            'stock_name': pos.get('stock_name', ''),
+            'quantity': quantity,
+            'buy_price': pos.get('buy_price', 0) or 0,
+            'current_price': pos.get('current_price', 0) or 0,
+            'profit_loss': pos.get('profit_loss', 0) or 0,
+        })
+
+    # 可用资金口径与策略统一（= 总资产 − 股票市值 − ETF市值，即同步时刻的 portfolio['cash']）：
+    # 取同步时冻结的快照值，缺失时退化为 runner 当前资金
+    available_cash = getattr(runner, 'current_ptrade_available_cash', None)
+    if available_cash is None:
+        available_cash = getattr(runner, 'current_total_capital', 0) or 0
+    try:
+        available_cash = round(float(available_cash), 2)
+        total_assets = round(float(total_assets), 2)
+    except (TypeError, ValueError):
+        return None
+    logger.info(
+        f"【前端-持仓】复用 PTrade 同步结果（跳过反馈文件重复解析）: "
+        f"持仓={len(holdings)} 条, 可用资金={available_cash}, "
+        f"总资产={total_assets} (日期 {feedback_date})")
+    return holdings, available_cash, total_assets
+
+
+def _get_portfolio_auto(runner, working_date: str):
+    """自动模式下读取 PTrade 资金和持仓（展示以 PTrade 为准）
+
+    按需求处理流程：
+    1. 工作日由 get_working_date 确定（收盘后为当日，否则前一交易日）
+    2. 资金/持仓来源：优先复用初始化同步的内存快照（方案B，避免同一请求内重复解析
+       Fund/Hold）；未同步或反馈文件已更新时，回退直读 PTrade 反馈文件
+    3. 展示信息以 PTrade 为准，不依赖 portfolio_*.json 缓存文件
+
+    Args:
+        runner: 策略运行器（提供 main_config 与 db_manager）
+        working_date: 工作日期 YYYY-MM-DD
+
+    Returns:
+        Flask jsonify 响应
+    """
+    from trading.ptrade.ptrade_feedback import PTradeFeedbackHandler
+    main_config = getattr(runner, 'main_config', None)
+    feedback_date = working_date.replace('-', '')
+    initial_capital = getattr(runner, 'initial_capital', 300000)
+
+    # 1. 资金与持仓：优先复用初始化同步的内存权威结果（方案B，避免重复解析）
+    snapshot = _get_ptrade_snapshot_from_runner(runner, feedback_date)
+    if snapshot:
+        holdings, available_cash, total_assets = snapshot
+    else:
+        handler = PTradeFeedbackHandler(project_root=str(project_root), config=main_config)
+        # 1.1 资金（Fund 文件）：总资产取 PTrade 权威值；可用资金按统一口径反算
+        #     （= 总资产 − 证券市值(含 ETF)，与策略口径 portfolio['cash'] 一致；
+        #      不使用 Fund「可用资金」列：该列清算前会扣除未成交委托冻结资金、偏低）
+        fund = handler.read_fund(feedback_date)
+        total_assets = round(fund.get('total_asset', 0.0), 2)
+        available_cash = _derive_available_cash(
+            total_assets, fund.get('market_value'), fund.get('available_cash'))
+        # 1.2 持仓（Hold 文件，已过滤 ETF）：数量/成本/市值/盈亏均取 PTrade 值
+        holdings = handler.read_holdings(feedback_date)
+
+    if not total_assets:
+        logger.error(
+            f"【前端-持仓】自动模式下 PTrade 总资产为 0，反馈文件可能异常 (日期 {feedback_date})")
+        return jsonify({
+            "success": False,
+            "error": "PTrade反馈数据未就绪，无法计算总资产",
+            "data": {
+                "positions": [],
+                "available_cash": 0,
+                "total_assets": 0,
+                "total_profit_percent": 0,
+                "initial_capital": initial_capital,
+                "run_mode": "auto",
+                "ptrade_enabled": True,
+                "message": "请等待PTrade反馈文件生成后刷新页面"
+            }
+        })
+
+    # 3. 构建持仓展示列表
+    positions_list = []
+    total_value = 0  # 用最新价计算的持仓总市值
+    for h in holdings:
+        stock_code = h['stock_code']
+        stock_name = h.get('stock_name', '')
+        quantity = h.get('quantity', 0)
+        cost_price = round(h.get('buy_price', 0), 2)
+        # 最新价：优先数据库 working_date 收盘价，缺失时保留 PTrade 反算价
+        current_price = h.get('current_price', 0)
+        ptrade_profit_loss = h.get('profit_loss', 0)
+        try:
+            df_price = runner.db_manager.read_stock(stock_code)
+            if df_price is not None and not df_price.empty:
+                price_row = df_price[df_price['date'] == working_date]
+                if not price_row.empty:
+                    current_price = float(price_row['close'].values[0])
+                else:
+                    current_price = float(df_price['close'].values[-1])
+        except Exception as e:
+            logger.debug(f"获取股票 {stock_code} 价格失败: {e}")
+        # 盈亏：优先 PTrade 盈亏金额，缺失时用最新价重算
+        profit_loss = round(ptrade_profit_loss if ptrade_profit_loss else (current_price - cost_price) * quantity, 2)
+        profit_loss_percent = round(((current_price - cost_price) / cost_price * 100 if cost_price > 0 else 0), 2)
+        total_value += quantity * current_price
+        positions_list.append({
+            'id': stock_code,
+            'stock_code': stock_code,
+            'stock_name': stock_name,
+            'quantity': quantity,
+            'cost_price': cost_price,
+            'current_price': current_price,
+            'stop_loss_price': round(cost_price * 0.95, 2),
+            'take_profit_price': round(cost_price * 1.15, 2),
+            'profit_loss': profit_loss,
+            'profit_loss_percent': profit_loss_percent,
+            'hold_days': 0,
+        })
+
+    positions_count = len(positions_list)
+    total_profit_percent = round(((total_assets - initial_capital) / initial_capital) * 100, 2)
+
+    logger.info(
+        f"【前端-持仓】自动模式以 PTrade 为准: 可用资金={available_cash}, "
+        f"总资产={total_assets}, 持仓数={positions_count} (日期 {working_date})")
+    return jsonify({
+        "success": True,
+        "data": {
+            "positions": positions_list,
+            "positions_count": positions_count,
+            "available_cash": available_cash,
+            "total_assets": total_assets,
+            "total_profit_percent": total_profit_percent,
+            "initial_cash": initial_capital,
+            "date": working_date,
+            "run_mode": "auto",
+            "ptrade_enabled": True,
+            "data_source": "ptrade",
+            "portfolio_date": working_date,
+        }
+    })
+
+
+_TRADING_DAYS_CACHE = {'dates': None, 'fetched_at': 0.0}
+
+
+def _get_trading_days_cached():
+    """近 400 天的**真实交易日**列表（`stock_kline` 去重日期 ✓）· 进程内缓存 10 分钟 ✓
+
+    用途：`/api/portfolio` 的"持有天"需**精确到交易日** ✗
+    （按工作日近似会把法定节假日算进去 ✗）
+    """
+    import time as _time
+    from datetime import date as _date, timedelta as _tdelta
+
+    now_ts = _time.time()
+    if (_TRADING_DAYS_CACHE['dates'] is not None
+            and (now_ts - _TRADING_DAYS_CACHE['fetched_at']) < 600):
+        return _TRADING_DAYS_CACHE['dates']
+    dates = []
+    try:
+        from utils.global_db import get_global_db
+        _start = (_date.today() - _tdelta(days=400)).strftime('%Y-%m-%d')
+        rows = get_global_db().query(
+            'SELECT DISTINCT date FROM stock_kline WHERE date >= ? ORDER BY date', (_start,))
+        dates = sorted({str(r['date'])[:10] for r in rows if r and r.get('date')})
+    except Exception as _e:
+        logger.warning(f"读取交易日历失败（持有天将回退为工作日口径）: {_e}")
+    _TRADING_DAYS_CACHE['dates'] = dates
+    _TRADING_DAYS_CACHE['fetched_at'] = now_ts
+    return dates
+
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 @app.route('/api/portfolio')
 def get_portfolio():
     """
@@ -3568,6 +4212,7 @@ def get_portfolio():
         {"success": true, "data": {"positions": {...}, "initial_cash": 300000}}
     """
     try:
+<<<<<<< HEAD
         # 延迟初始化策略运行器（仅在未初始化时才初始化）
         runner = get_strategy_runner()
         if not runner:
@@ -3593,12 +4238,78 @@ def get_portfolio():
         if portfolio_file.exists():
             try:
                 with open(portfolio_file, 'r', encoding='utf-8') as f:
+=======
+        # 使用单例模式获取策略运行器（首次调用自动初始化所有数据）
+        runner = get_strategy_runner(auto_init=True)
+        if not runner:
+            return jsonify({"success": True, "data": {"positions": {}, "cash": 300000, "total_asset": 300000, "initial_capital": 300000, "run_mode": "manual", "ptrade_enabled": False}})
+        
+        # 获取当前工作日期和运行模式
+        working_date = runner.get_working_date()
+        run_mode = getattr(runner, 'run_mode', 'manual')
+        
+        # 自动模式：展示信息以 PTrade 反馈为准，直接读取 Fund/Hold 文件
+        if run_mode == 'auto':
+            return _get_portfolio_auto(runner, working_date)
+        
+        # ===== 以下为手动模式原有逻辑（读本地 portfolio 文件） =====
+        # 查找工作日的 portfolio 文件
+        portfolio_path, found_date, _ = runner.find_latest_portfolio_file(working_date)
+
+        # 自动模式数据来源判定：
+        # - found_date == working_date：当日 portfolio，data_source="current"
+        # - found_date != working_date：回退到最近交易日的有效 portfolio（如周末/节假日后
+        #   访问，working_date 取前一交易日但该日文件未生成），data_source="history"
+        # - portfolio_path is None：30 天内无任何 portfolio，确属 PTrade 同步失败，提示未就绪
+        data_source = "current" if found_date == working_date else "history"
+        if data_source == "history":
+            logger.warning(
+                f"【前端-持仓】未找到 {working_date} 的 portfolio 文件，回退到最近交易日 {found_date} 的历史数据"
+                f"（盘前/盘中/非交易日按前一交易日处理，盘后按当日处理）")
+
+        if portfolio_path is None:
+            portfolio_path = str(runner.running_dir / f"portfolio_{working_date}.json")
+        
+        # 自动模式下，portfolio 文件通常由 initialize_daily_data 的 PTrade 同步写入当日文件；
+        # 但若当前为周末/节假日（working_date 为前一交易日）而该日文件缺失，find_latest_portfolio_file
+        # 已回退到更早的有效文件（portfolio_path 非空），应正常加载并标注 history。
+        # 仅当 30 天内完全无任何 portfolio（portfolio_path 仍为 None）时，才视为 PTrade 同步失败。
+        if portfolio_path is None or not os.path.exists(portfolio_path):
+            logger.error(
+                f"【前端-持仓】自动模式下 {working_date} 的 portfolio 文件不存在，PTrade 同步可能失败")
+            return jsonify({
+                "success": False,
+                "error": "PTrade反馈数据未就绪，无法获取持仓信息",
+                "data": {
+                    "positions": {},
+                    "cash": 0,
+                    "total_asset": 0,
+                    "initial_capital": getattr(runner, 'initial_capital', 300000),
+                    "run_mode": "auto",
+                    "ptrade_enabled": True,
+                    "data_source": "unavailable",
+                    "message": "请等待PTrade反馈文件生成后刷新页面"
+                }
+            })
+        
+        # 先读取文件数据，获取资金和持仓
+        file_data = {}
+        if portfolio_path and os.path.exists(portfolio_path):
+            try:
+                with open(portfolio_path, 'r', encoding='utf-8') as f:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     file_data = json.load(f)
             except Exception as e:
                 logger.warning(f"读取持仓文件失败: {str(e)}")
         
+<<<<<<< HEAD
         # 再调用 _load_portfolio 恢复策略运行器中的资金和持仓
         portfolio_result = runner._load_portfolio(str(portfolio_file))
+=======
+        logger.debug(f"【前端-持仓】使用 portfolio 文件: {portfolio_path} (工作日期: {working_date})")
+        # 再调用 _load_portfolio 恢复策略运行器中的资金和持仓
+        portfolio_result = runner._load_portfolio(portfolio_path)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         positions = portfolio_result.get('positions', {})
         
         # 更新内存中的持仓，确保执行信号时可以找到
@@ -3614,10 +4325,26 @@ def get_portfolio():
         # 转换为列表格式（同时更新价格和计算总资产）
         positions_list = []
         total_value = 0  # 用新价格计算的持仓总市值
+<<<<<<< HEAD
         
         if positions and isinstance(positions, dict):
             for stock_code, pos in positions.items():
                 if isinstance(pos, dict):
+=======
+
+        # ETF代码前缀过滤规则（与 ptrade_feedback.ETF_CODE_PREFIXES 保持一致）
+        # 沪市ETF: 51xxxx, 50xxxx, 52xxxx, 56xxxx, 588xxx / 深市ETF: 15xxxx, 16xxxx
+        _ETF_PREFIXES = ('51', '50', '52', '56', '588', '15', '16')
+
+        if positions and isinstance(positions, dict):
+            for stock_code, pos in positions.items():
+                if isinstance(pos, dict):
+                    # 过滤ETF：只取纯数字部分判断前缀
+                    code_numeric = stock_code.rstrip('.SH').rstrip('.SZ')
+                    if code_numeric.startswith(_ETF_PREFIXES):
+                        logger.debug(f"【前端-持仓】过滤ETF: {stock_code}")
+                        continue
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     # 获取成本价（优先buy_price，兼容cost_price）
                     cost_price = round(pos.get('buy_price', pos.get('cost_price', 0)), 2)
                     
@@ -3649,6 +4376,50 @@ def get_portfolio():
                     # 累加持仓市值（用新价格）
                     total_value += quantity * current_price
                     
+<<<<<<< HEAD
+=======
+                    # 【2026-09-21】持有天数修复 ✓
+                    #   原实现：'hold_days': pos.get('hold_days', …0) ✗ —— 但持仓字典里
+                    #   **根本没有 hold_days 字段** ✗ → 接口恒返回 0 ✗ → 前端"持有天"全 0 ✗
+                    #   现：从建仓日算到当前日，统计**工作日**（周一~周五 ✓）近似交易日口径 ✓
+                    #   （不引入新依赖 ✓；与"买入当日=0 天"的习惯一致 ✓）
+                    _hold_days_out = 0
+                    _buy_date_str = ''
+                    try:
+                        _hv = pos.get('hold_days') or pos.get('holding_days')
+                        if _hv not in (None, ''):
+                            _hold_days_out = max(0, int(float(_hv)))
+                        if _hold_days_out <= 0:
+                            _raw_buy = (pos.get('first_buy_date') or pos.get('buy_date')
+                                        or pos.get('added_date') or pos.get('key_date') or '')
+                            _d1 = ''.join(ch for ch in str(_raw_buy) if ch.isdigit())[:8]
+                            _d2 = ''.join(ch for ch in str(working_date) if ch.isdigit())[:8]
+                            if len(_d1) == 8 and len(_d2) == 8 and _d1 <= _d2:
+                                _iso1 = '%s-%s-%s' % (_d1[:4], _d1[4:6], _d1[6:8])
+                                _iso2 = '%s-%s-%s' % (_d2[:4], _d2[4:6], _d2[6:8])
+                                _buy_date_str = _iso1
+                                _tds = _get_trading_days_cached()
+                                if _tds:
+                                    # 【2026-09-21】**精确到交易日** ✓
+                                    #   统计 (建仓日, 当前日] 内的交易日数量 ✓
+                                    #   例：09-17 建仓 → 09-21（含 09-18）为 2 个交易日 ✓
+                                    _hold_days_out = max(
+                                        0, sum(1 for _td_date in _tds if _iso1 < _td_date <= _iso2))
+                                else:
+                                    # 兜底：交易日历取不到时，退回"工作日"近似 ✓
+                                    from datetime import date as _date, timedelta as _td
+                                    _cur = _date(int(_d1[:4]), int(_d1[4:6]), int(_d1[6:8]))
+                                    _end = _date(int(_d2[:4]), int(_d2[4:6]), int(_d2[6:8]))
+                                    _cnt = 0
+                                    while _cur <= _end:
+                                        if _cur.weekday() < 5:
+                                            _cnt += 1
+                                        _cur += _td(days=1)
+                                    _hold_days_out = max(0, _cnt - 1)
+                    except Exception as _he:
+                        logger.debug(f"计算持有天数失败（忽略，返回0）{stock_code}: {_he}")
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     positions_list.append({
                         'id': pos.get('id', stock_code),
                         'stock_code': stock_code,
@@ -3660,6 +4431,7 @@ def get_portfolio():
                         'take_profit_price': take_profit_price,
                         'profit_loss': pos.get('profit_loss', profit_loss),
                         'profit_loss_percent': pos.get('profit_loss_percent', profit_loss_percent),
+<<<<<<< HEAD
                         'hold_days': pos.get('hold_days', pos.get('holding_days', 0))
                     })
         
@@ -3669,6 +4441,43 @@ def get_portfolio():
         
         # 获取当前运行模式（手动/自动），前端据此控制按钮显隐
         run_mode = getattr(runner, 'run_mode', 'manual')
+=======
+                        'hold_days': _hold_days_out,
+                        'buy_date': _buy_date_str          # 顺带回传建仓日 ✓（前端可自行核对 ✓）
+                    })
+        
+        # 计算总资产和盈亏率
+        # 运行模式决定总资产来源：自动模式才读 PTrade 反馈；手动模式维持原有自算逻辑
+        run_mode = getattr(runner, 'run_mode', 'manual')
+        if run_mode == 'auto':
+            # 自动模式从 PTrade Fund 文件读取总资产，并按统一口径反算可用资金
+            # （总资产 − 证券市值(含 ETF)），避免 portfolio 文件不是最新时两者不一致
+            ptrade_fund = _get_ptrade_fund_data(runner, working_date)
+            if ptrade_fund is not None:
+                available_cash = ptrade_fund['available_cash']
+                total_assets = ptrade_fund['total_asset']
+            else:
+                logger.error(
+                    f"【前端-持仓】自动模式下未获取到 PTrade 资金数据，PTrade 同步可能失败，终止返回")
+                return jsonify({
+                    "success": False,
+                    "error": "PTrade反馈数据未就绪，无法计算总资产",
+                    "data": {
+                        "positions": positions_list,
+                        "available_cash": available_cash,
+                        "total_assets": 0,
+                        "total_profit_percent": 0,
+                        "initial_capital": initial_capital,
+                        "run_mode": "auto",
+                        "ptrade_enabled": True,
+                        "message": "请等待PTrade反馈文件生成后刷新页面"
+                    }
+                })
+        else:
+            # 手动模式维持原有逻辑：不读 PTrade 反馈，总资产用「可用资金 + 持仓市值」自算
+            total_assets = available_cash + total_value
+        total_profit_percent = ((total_assets - initial_capital) / initial_capital) * 100
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 返回持仓信息和统计数据
         return jsonify({
@@ -3681,7 +4490,13 @@ def get_portfolio():
                 "total_profit_percent": total_profit_percent,
                 "initial_cash": 300000,
                 "date": working_date,
+<<<<<<< HEAD
                 "run_mode": run_mode
+=======
+                "run_mode": run_mode,
+                "data_source": data_source,
+                "portfolio_date": found_date
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             }
         })
     except Exception as e:
@@ -3708,11 +4523,17 @@ def sell_position():
             return jsonify({"success": False, "error": "股票代码不能为空"})
         
         # 获取策略运行器
+<<<<<<< HEAD
         runner = get_strategy_runner()
         if not runner:
             logger.info("策略运行器未初始化，进行初始化...")
             from trading.strategy_runner import StrategyRunner
             runner = StrategyRunner()
+=======
+        runner = get_strategy_runner(auto_init=True)
+        if not runner:
+            return jsonify({"success": False, "error": "策略运行器未初始化"})
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 自动模式下禁止手动卖出，以 PTrade 实际持仓为准
         run_mode = getattr(runner, 'run_mode', 'manual')
@@ -3910,9 +4731,12 @@ def get_signals():
         # 获取当前工作日期
         working_date = runner.get_working_date()
         
+<<<<<<< HEAD
         # 初始化当日数据（自动从最近有数据的交易日继承）
         runner.initialize_daily_data(working_date)
         
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 加载信号历史
         signals_file = runner.running_dir / f"signals_{working_date}.json"
         signals = runner._load_signals(str(signals_file))
@@ -3953,9 +4777,12 @@ def get_stock_pool():
         # 获取当前工作日期
         working_date = runner.get_working_date()
         
+<<<<<<< HEAD
         # 初始化当日数据（自动从最近有数据的交易日继承）
         runner.initialize_daily_data(working_date)
         
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 加载股票池数据
         pool_file = runner.running_dir / f"buy_candidate_pool.json"
         if pool_file.exists():
@@ -3964,6 +4791,13 @@ def get_stock_pool():
                 pool = pool_data.get('pool', [])
         else:
             pool = []
+<<<<<<< HEAD
+=======
+        # 【2026-09-18】展示层同样剔除非股票品种（标准券/质押券）：历史文件可能残留，
+        #   避免前端股票池继续显示（与运行器 / 持仓回池 同一判定口径）
+        from trading.strategy_runner import filter_non_stock_pool
+        pool = filter_non_stock_pool(pool, where='股票池展示')
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 【优化】只调用一次获取交易日列表，避免对每只股票重复查询
         # 获取历史交易日（过去60天足够了）
@@ -4215,6 +5049,9 @@ def run_web_server(host='0.0.0.0', port=5000, debug=False):
     # 初始化日志系统
     from utils.log_config import LogConfig
     LogConfig.setup_logging()
+
+    get_commander().start_polling()
+
     
     # 打印所有注册的路由
     print("\n注册的路由:")
@@ -4327,8 +5164,14 @@ def get_risk_history():
         # 获取历史风控状态
         history = controller.get_risk_history(days)
         
+<<<<<<< HEAD
         # 转换为字典列表
         history_data = [status.to_dict() for status in history]
+=======
+        # 转换为字典列表（2026-09-20：get_risk_history 现优先返回 DB 行 dict，
+        #   内存兜底时才是 RiskStatus 对象 → 两种都兼容）
+        history_data = [s if isinstance(s, dict) else s.to_dict() for s in history]
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         return jsonify({
             'success': True,
@@ -4437,6 +5280,45 @@ def update_risk_config():
             'message': f'更新风控配置失败: {str(e)}'
         }), 500
 
+<<<<<<< HEAD
+=======
+@app.route('/api/feishu/callback', methods=['POST'])
+def feishu_callback():
+    """
+    飞书 Event Subscription 回调端点（仅用于 URL 验证，不处理指令）
+
+    KHunter 飞书指令采用"仅轮询"模式：指令由后台轮询线程从群聊拉取并执行，
+    本端点仅保留飞书开放平台要求的 URL 验证响应（url_verification），
+    收到消息事件（event_callback）时由 handle_callback 直接忽略，不执行任何指令，
+    以避免与轮询通道重复执行同一指令。
+
+    飞书开放平台配置（如需保留事件订阅可达性）:
+      - 事件回调 URL: http://<host>:<port>/api/feishu/callback
+      - 订阅 im.message.receive_v1 事件（推送将被忽略）
+      - 添加 im:message 权限
+
+    返回:
+        验证请求返回 challenge，其他事件返回空确认（不触发指令）
+    """
+    try:
+        body = request.get_json(force=True)
+        if not body:
+            return jsonify({"error": "empty body"}), 400
+
+        logger.debug("收到飞书回调: %s", json.dumps(body, ensure_ascii=False)[:500])
+
+
+
+        commander = get_commander()
+        result = commander.handle_callback(body)
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error("飞书回调处理异常: %s", e)
+        return jsonify({}), 200
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 if __name__ == '__main__':
     run_web_server(debug=False, port=5001)

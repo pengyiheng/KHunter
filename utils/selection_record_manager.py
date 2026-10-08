@@ -592,8 +592,39 @@ class SelectionRecordManager:
             
             where_sql = " AND ".join(where_clauses)
             
-            # 策略名称筛选需要特殊处理，因为我们需要先分组再筛选
+            # 策略名称筛选：使用子查询筛选包含指定策略的记录
             strategy_name_filter = filters.get('strategy_name', '')
+            if strategy_name_filter:
+                # 收集所有可能的策略名称变体（解决DB存储名与搜索名不一致的问题）
+                # DB中存的是 strategy_params.yaml 的 display_name（如"2560战法"）
+                # 搜索时可能用的是策略init名称（如"2560战法选股策略"）或类名（如"Strategy2560Selection"）
+                name_variants = self._get_strategy_name_variants(strategy_name_filter)
+                
+                # 构建多个LIKE条件的OR子句
+                like_clauses = []
+                like_params = []
+                for variant in name_variants:
+                    like_clauses.append("strategy_name LIKE ?")
+                    like_params.append(f'%{variant}%')
+                    # 同时匹配去"策略"后缀的变体
+                    variant_no_suffix = variant.replace('策略', '')
+                    if variant_no_suffix != variant:
+                        like_clauses.append("REPLACE(strategy_name, '策略', '') LIKE ?")
+                        like_params.append(f'%{variant_no_suffix}%')
+                
+                # 使用子查询筛选包含指定策略的股票+日期组合
+                where_clauses.append(f"""
+                    (stock_code, selection_date) IN (
+                        SELECT DISTINCT stock_code, selection_date 
+                        FROM stock_selection_record 
+                        WHERE is_active = 1 AND (
+                            {' OR '.join(like_clauses)}
+                        )
+                    )
+                """)
+                params.extend(like_params)
+                # 重新构建where_sql
+                where_sql = " AND ".join(where_clauses)
             
             # 查询分组后的总数
             total = 0
@@ -612,107 +643,54 @@ class SelectionRecordManager:
             
             # 转换为字典列表并计算价格指标
             data = []
-            filtered_total = 0
             
             # 计算偏移量
             offset = (page - 1) * limit
-            current_offset = offset
             
-            while len(data) < limit:
-                # 构建查询SQL，使用strategy_count字段
-                query_sql = f"""
-                SELECT DISTINCT stock_code, stock_name, selection_date, MIN(selection_price) as selection_price, 
-                       MIN(industry) as industry, MIN(sector) as sector, 
-                       MIN(selection_time) as selection_time, 
-                       MAX(strategy_count) as strategy_count
+            # 构建查询SQL，使用strategy_count字段
+            query_sql = f"""
+            SELECT DISTINCT stock_code, stock_name, selection_date, MIN(selection_price) as selection_price, 
+                   MIN(industry) as industry, MIN(sector) as sector, 
+                   MIN(selection_time) as selection_time, 
+                   MAX(strategy_count) as strategy_count
+            FROM stock_selection_record 
+            WHERE {where_sql}
+            GROUP BY stock_code, selection_date
+            ORDER BY selection_date DESC, strategy_count DESC, selection_time DESC
+            LIMIT ? OFFSET ?
+            """
+            
+            # 执行查询
+            cursor = self.db_manager.execute_with_retry(query_sql, params + [limit, offset])
+            batch_rows = [dict(row) for row in cursor.fetchall()]
+            
+            for record in batch_rows:
+                stock_code = record['stock_code']
+                selection_date = record['selection_date']
+                
+                # 获取该股票在该日期的所有策略
+                strategies_sql = """
+                SELECT strategy_name 
                 FROM stock_selection_record 
-                WHERE {where_sql}
-                GROUP BY stock_code, selection_date
-                ORDER BY selection_date DESC, strategy_count DESC, selection_time DESC
-                LIMIT ? OFFSET ?
+                WHERE stock_code = ? AND selection_date = ? AND is_active = 1
                 """
+                strategies_cursor = self.db_manager.execute_with_retry(strategies_sql, (stock_code, selection_date))
+                strategies = [row[0] for row in strategies_cursor.fetchall()]
                 
-                # 执行查询
-                cursor = self.db_manager.execute_with_retry(query_sql, params + [limit * 2, current_offset])
-                batch_rows = [dict(row) for row in cursor.fetchall()]
+                # 实时计算价格指标
+                performance = self.calculate_performance(
+                    stock_code,
+                    record['selection_price'],
+                    selection_date
+                )
                 
-                if not batch_rows:
-                    break
-                
-                current_offset += len(batch_rows)
-                
-                for record in batch_rows:
-                    stock_code = record['stock_code']
-                    selection_date = record['selection_date']
-                    
-                    # 获取该股票在该日期的所有策略
-                    strategies_sql = """
-                    SELECT strategy_name 
-                    FROM stock_selection_record 
-                    WHERE stock_code = ? AND selection_date = ? AND is_active = 1
-                    """
-                    strategies_cursor = self.db_manager.execute_with_retry(strategies_sql, (stock_code, selection_date))
-                    strategies = [row[0] for row in strategies_cursor.fetchall()]
-                    
-                    # 如果有策略名称筛选，检查是否包含该策略
-                    if strategy_name_filter:
-                        # 检查是否有策略名称包含筛选条件（兼容有无"策略"二字的情况）
-                        filter_text = strategy_name_filter
-                        # 移除"策略"二字进行比较
-                        filter_text_no_strategy = filter_text.replace('策略', '')
-                        
-                        matched = False
-                        for strategy in strategies:
-                            # 检查原始策略名称是否包含筛选条件
-                            if filter_text in strategy:
-                                matched = True
-                                break
-                            # 检查移除"策略"二字后的策略名称是否包含筛选条件
-                            strategy_no_strategy = strategy.replace('策略', '')
-                            if filter_text_no_strategy in strategy_no_strategy:
-                                matched = True
-                                break
-                        
-                        if not matched:
-                            continue
-                    
-                    # 实时计算价格指标
-                    performance = self.calculate_performance(
-                        stock_code,
-                        record['selection_price'],
-                        selection_date
-                    )
-                    
-                    # 合并价格指标和策略信息
-                    record.update(performance)
-                    record['strategy_name'] = "，".join(strategies)  # 用中文逗号连接策略名称
-                    record['strategies'] = strategies  # 添加策略列表
-                    data.append(record)
-                    filtered_total += 1
-                    
-                    if len(data) >= limit:
-                        break
+                # 合并价格指标和策略信息
+                record.update(performance)
+                record['strategy_name'] = "，".join(strategies)  # 用中文逗号连接策略名称
+                record['strategies'] = strategies  # 添加策略列表
+                data.append(record)
             
-            # 计算实际的总记录数（如果有筛选）
-            if strategy_name_filter:
-                # 重新查询符合筛选条件的总记录数
-                filtered_count_sql = f"""
-                SELECT COUNT(*) as total 
-                FROM (
-                    SELECT DISTINCT stock_code, selection_date 
-                    FROM stock_selection_record 
-                    WHERE {where_sql}
-                ) as distinct_records
-                """
-                cursor = self.db_manager.execute_with_retry(filtered_count_sql, params)
-                row = cursor.fetchone()
-                if row and row[0]:
-                    total = row[0]
-            else:
-                # 使用之前查询的总记录数
-                pass
-            
-            logger.info(f"查询选股历史 - 总数: {total}, 筛选后: {filtered_total}, 页码: {page}, 每页: {limit}")
+            logger.info(f"查询选股历史 - 总数: {total}, 返回数据: {len(data)}, 页码: {page}, 每页: {limit}")
             
             return {
                 'success': True,
@@ -818,6 +796,73 @@ class SelectionRecordManager:
         except Exception as e:
             logger.error(f"删除旧记录失败: {str(e)}")
     
+    def _get_strategy_name_variants(self, filter_text: str) -> List[str]:
+        """
+        根据用户输入的策略名称筛选条件，获取所有可能匹配的策略名称变体
+        
+        背景：DB中存储的是 strategy_params.yaml 的 display_name（如"2560战法"），
+        但用户搜索时可能使用策略init名称（如"2560战法选股策略"）或类名（如"Strategy2560Selection"）。
+        此方法通过多个映射源查找所有可能的名称变体，确保LIKE匹配不会遗漏。
+        
+        参数：
+            filter_text: 用户输入的策略名称筛选条件
+        
+        返回：
+            所有可能的策略名称变体列表（包含原始输入）
+        """
+        variants = [filter_text]  # 始终包含原始输入
+        
+        try:
+            # 1. 尝试通过 strategy_name_mapper 查找变体
+            from utils.strategy_name_mapper import (
+                STRATEGY_NAME_MAP, STRATEGY_NAME_REVERSE_MAP
+            )
+            
+            # 如果输入是类名（如 Strategy2560Selection）
+            if filter_text in STRATEGY_NAME_MAP:
+                chinese_name = STRATEGY_NAME_MAP[filter_text]
+                if chinese_name not in variants:
+                    variants.append(chinese_name)
+            
+            # 如果输入是中文名（如 2560战法选股策略）
+            if filter_text in STRATEGY_NAME_REVERSE_MAP:
+                class_name = STRATEGY_NAME_REVERSE_MAP[filter_text]
+                if class_name not in variants:
+                    variants.append(class_name)
+                # 从类名再找到中文名（可能不同）
+                if class_name in STRATEGY_NAME_MAP:
+                    chinese_name = STRATEGY_NAME_MAP[class_name]
+                    if chinese_name not in variants:
+                        variants.append(chinese_name)
+            
+            # 2. 尝试通过 strategy_params.yaml 查找 display_name
+            import yaml
+            config_path = Path(__file__).parent.parent / "config" / "strategy_params.yaml"
+            if config_path.exists():
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f) or {}
+                strategies_config = config.get('strategies', {})
+                
+                for class_name, sc in strategies_config.items():
+                    display_name = sc.get('display_name', '')
+                    # 如果用户搜索的文本匹配某个 display_name 或 class_name
+                    if (filter_text in display_name or display_name in filter_text or
+                        filter_text in class_name or class_name in filter_text):
+                        if display_name and display_name not in variants:
+                            variants.append(display_name)
+                        if class_name not in variants:
+                            variants.append(class_name)
+                        
+                        # 同时查找 name mapper 中的对应中文名
+                        if class_name in STRATEGY_NAME_MAP:
+                            cn_name = STRATEGY_NAME_MAP[class_name]
+                            if cn_name not in variants:
+                                variants.append(cn_name)
+        except Exception as e:
+            logger.debug(f"获取策略名称变体失败: {str(e)}，使用原始输入")
+        
+        return variants
+
     def generate_strategy_name(self, strategy_names: List[str]) -> str:
         """
         生成选股方案名称 - 直接使用策略名称

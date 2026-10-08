@@ -22,6 +22,14 @@ strategy_names:
   TrendStartStrategy: 趋势起点策略
   GoldenTriangleStrategy: 金三角策略
   GoldenCrossNotGreenStrategy: 金叉不绿策略
+<<<<<<< HEAD
+=======
+  LowTD9Strategy: 低位九转策略
+  OversoldReboundStrategy: 超跌反弹策略
+  LeaderStrategy: 龙头策略
+  MainUptrendDipBuyStrategy: 主升低吸策略
+  NewStockDrawdownStrategy: 次新腰斩策略
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 # 反向映射（中文名称到英文类名）
 # 自动生成，不需要手动维护
@@ -43,4 +51,29 @@ reverse_mapping:
   2560战法选股策略: Strategy2560Selection
   趋势起点策略: TrendStartStrategy
   金三角策略: GoldenTriangleStrategy
+<<<<<<< HEAD
   金叉不绿策略: GoldenCrossNotGreenStrategy
+=======
+  超跌反弹策略: OversoldReboundStrategy
+  # 超跌反弹策略简称别名（前端/回测引擎可能使用简称）
+  超跌反弹: OversoldReboundStrategy
+  低位九转策略: LowTD9Strategy
+  # 低位九转策略简称别名（前端/回测引擎可能使用简称）
+  低位九转: LowTD9Strategy
+  # 蛇形命名别名（用于定时任务等场景）
+  immortal_guidance: ImmortalGuidanceStrategy
+  golden_triangle: GoldenTriangleStrategy
+  # 金叉不绿策略
+  金叉不绿策略: GoldenCrossNotGreenStrategy
+  golden_cross_not_green: GoldenCrossNotGreenStrategy
+  # 龙头策略
+  龙头策略: LeaderStrategy
+  龙头: LeaderStrategy
+  # 主升低吸策略
+  主升低吸策略: MainUptrendDipBuyStrategy
+  主升低吸: MainUptrendDipBuyStrategy
+  # 次新腰斩策略（上市半年内 + 自上市最高价跌幅≥50%）
+  次新腰斩策略: NewStockDrawdownStrategy
+  次新腰斩: NewStockDrawdownStrategy
+  new_stock_drawdown: NewStockDrawdownStrategy
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e

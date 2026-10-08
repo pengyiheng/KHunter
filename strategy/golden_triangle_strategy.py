@@ -32,6 +32,10 @@ class GoldenTriangleStrategy(BaseStrategy):
             'c_cross_min_volume_ratio': 1.1,
             'lookback_days': 30,
             'strategy_weight': 50,
+<<<<<<< HEAD
+=======
+            'ma60_rise_required': True,  # 是否要求60日均线向上（选股日>前一交易日）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         }
         if params:
             default_params.update(params)
@@ -76,7 +80,11 @@ class GoldenTriangleStrategy(BaseStrategy):
 
     def get_selection_criteria(self):
         """获取选股条件描述"""
+<<<<<<< HEAD
         return [
+=======
+        criteria = [
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             f"1. A点形成：{self.params['short_period']}日均线上穿{self.params['mid_period']}日均线",
             f"2. B点形成：{self.params['short_period']}日均线上穿{self.params['long_period']}日均线",
             f"3. C点形成：{self.params['mid_period']}日均线上穿{self.params['long_period']}日均线",
@@ -85,9 +93,20 @@ class GoldenTriangleStrategy(BaseStrategy):
             f"6. A-C间隔 <= {self.params['ac_interval']}天",
             f"7. 均线多头排列：MA{self.params['short_period']} >= MA{self.params['mid_period']} >= MA{self.params['long_period']} >= MA{self.params['super_long_period']}",
         ]
+<<<<<<< HEAD
 
     def quick_filter(self, df):
         """快速过滤：检查数据是否足够并进行涨幅过滤"""
+=======
+        if self.params.get('ma60_rise_required', True):
+            criteria.append(
+                f"6. 60日均线向上：选股日MA{self.params['super_long_period']} > 前一交易日MA{self.params['super_long_period']}"
+            )
+        return criteria
+
+    def quick_filter(self, df):
+        """快速过滤：仅检查数据量是否足够（已去除涨幅过滤）"""
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         if df is None or df.empty:
             return False
         
@@ -96,6 +115,7 @@ class GoldenTriangleStrategy(BaseStrategy):
         if len(df) < min_length:
             return False
         
+<<<<<<< HEAD
         # 获取C点涨幅阈值作为快速过滤标准
         min_gain = float(self.params.get('c_cross_min_gain', 0.01))
         
@@ -117,6 +137,8 @@ class GoldenTriangleStrategy(BaseStrategy):
                 if today_gain < min_gain:
                     return False
         
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return True
 
     def select_stocks(self, df, stock_name='') -> list:
@@ -125,6 +147,20 @@ class GoldenTriangleStrategy(BaseStrategy):
         if not self.quick_filter(df):
             return []
 
+<<<<<<< HEAD
+=======
+        # 【2026-09-19 未来函数排查】排序自免疫：
+        #   本策略以"数据倒序（最新在前）"为前提取 iloc[0] 为信号日（见 _find_cross_points）。
+        #   标准路径（回测/实盘）经 BaseStrategy.execute_selection 已统一归一化为倒序，
+        #   但旁路调用方（strategy/strategy_registry.py、main.py 等直调
+        #   calculate_indicators + select_stocks）可能传入**升序**数据 →
+        #   iloc[0] 变成最旧一天，而 A/B 点的"向前查找"（index 递增）会落到**未来日期**
+        #   —— 即未来函数。此处统一归一化为倒序，消除对调用方顺序的隐式依赖。
+        #   注：calculate_indicators 会保留输入顺序，故先归一化再算指标，口径一致。
+        if len(df) >= 2 and str(df['date'].iloc[0]) < str(df['date'].iloc[-1]):
+            df = df.iloc[::-1].reset_index(drop=True)
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         if stock_name and not self._validate_stock_name(stock_name):
             return []
 
@@ -144,6 +180,7 @@ class GoldenTriangleStrategy(BaseStrategy):
         if ac_interval_days > int(self.params['ac_interval']):
             return []
 
+<<<<<<< HEAD
         c_day_data = df.iloc[c_idx]
         c_gain = c_day_data['gain'] if not pd.isna(c_day_data['gain']) else 0
         if c_gain < float(self.params['c_cross_min_gain']):
@@ -151,6 +188,19 @@ class GoldenTriangleStrategy(BaseStrategy):
 
         c_volume_ratio = c_day_data['volume'] / c_day_data['volume_ma5'] \
             if c_day_data['volume_ma5'] > 0 else 0
+=======
+        # 记录C点涨幅与量能比（用于展示与过滤）
+        c_day_data = df.iloc[c_idx]
+        c_gain = c_day_data['gain'] if not pd.isna(c_day_data['gain']) else 0
+        c_volume_ratio = c_day_data['volume'] / c_day_data['volume_ma5'] \
+            if c_day_data['volume_ma5'] > 0 else 0
+
+        # C点涨幅限制：C点当日涨幅需达到最小阈值（资金力度确认）
+        if c_gain < float(self.params['c_cross_min_gain']):
+            return []
+
+        # C点量能限制：C点当日成交量/MA5成交量需达到最小量能比（放量确认）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         if c_volume_ratio < float(self.params['c_cross_min_volume_ratio']):
             return []
 
@@ -162,6 +212,19 @@ class GoldenTriangleStrategy(BaseStrategy):
         if not (sma_short >= sma_mid >= sma_long >= sma_super_long):
             return []
 
+<<<<<<< HEAD
+=======
+        # 60日均线向上：选股日60日均线 > 前一交易日60日均线（趋势向上过滤）
+        if self.params.get('ma60_rise_required', True):
+            if latest_idx + 1 >= len(df):
+                return []
+            ma60_today = df.iloc[latest_idx]['sma_super_long']  # 选股日60日均线
+            ma60_prev = df.iloc[latest_idx + 1]['sma_super_long']  # 前一交易日60日均线
+            # 数据不足时60日均线为NaN，直接排除
+            if pd.isna(ma60_today) or pd.isna(ma60_prev) or ma60_today <= ma60_prev:
+                return []
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         triangle_type = 'golden_spider' if ac_interval_days == 0 else 'golden_triangle'
 
         return [{

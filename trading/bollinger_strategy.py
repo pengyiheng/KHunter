@@ -31,11 +31,19 @@ class BollingerStrategy(TimingStrategy):
         self.use_fixed_amount = self.config.get('use_fixed_amount', True)  # 是否使用固定金额（False则使用仓位比例）
         self.buy_limit = self.config.get('buy_limit', 1.01)  # 买入限价比例
     
+<<<<<<< HEAD
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+=======
+    def calculate_indicators(self, df: pd.DataFrame, stock_code: str = "") -> pd.DataFrame:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """计算布林带指标
         
         Args:
             df: 股票数据
+<<<<<<< HEAD
+=======
+            stock_code: 股票代码（用于指标缓存隔离）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
         Returns:
             添加了布林带的DataFrame
@@ -46,15 +54,24 @@ class BollingerStrategy(TimingStrategy):
         if len(result) > 1 and result['date'].iloc[0] > result['date'].iloc[1]:
             result = result.iloc[::-1].reset_index(drop=True)
         
+<<<<<<< HEAD
         # 使用技术指标计算模块计算布林带
         mid, upper, lower = self.technical_indicators.calculate_bollinger_bands(result, self.period, self.multiplier)
+=======
+        # 使用技术指标计算模块计算布林带，传入股票代码以隔离缓存
+        mid, upper, lower = self.technical_indicators.calculate_bollinger_bands(result, self.period, self.multiplier, stock_code=stock_code)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         result['boll_mid'] = mid
         result['boll_upper'] = upper
         result['boll_lower'] = lower
         
         return result
     
+<<<<<<< HEAD
     def get_timing_result(self, df: pd.DataFrame, position: Optional[Dict] = None, cash: Optional[float] = None, use_prev_day_signal: bool = True) -> TimingResult:
+=======
+    def get_timing_result(self, df: pd.DataFrame, position: Optional[Dict] = None, cash: Optional[float] = None, use_prev_day_signal: bool = True, stock_code: str = "") -> TimingResult:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """获取布林带策略择时结果
         
         Args:
@@ -64,12 +81,17 @@ class BollingerStrategy(TimingStrategy):
             use_prev_day_signal: 是否使用前一天信号（回测模式），默认True
                 - True: 使用T-1日指标判断信号（回测模式）
                 - False: 使用T日指标判断信号（狩猎场模式）
+<<<<<<< HEAD
+=======
+            stock_code: 股票代码（用于指标缓存隔离）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
         Returns:
             择时结果
         """
         result = TimingResult()
         
+<<<<<<< HEAD
         # 计算布林带
         df = self.calculate_indicators(df)
         
@@ -85,6 +107,24 @@ class BollingerStrategy(TimingStrategy):
         else:
             # 狩猎场模式：使用T日指标判断信号
             signal_bar = latest
+=======
+        # 计算布林带，传入股票代码以隔离缓存
+        df = self.calculate_indicators(df, stock_code=stock_code)
+        
+        # 获取最新数据
+        latest = df.iloc[-1]
+        trade_price = latest['open']  # 交易价格为T日开盘价
+        
+        # 根据模式选择信号判断基准
+        if use_prev_day_signal and len(df) >= 2:
+            # 回测模式：使用T-1日指标和收盘价判断信号（T日开盘价成交）
+            signal_bar = df.iloc[-2]
+            current_price = signal_bar['close']  # 用T-1收盘价判断，避免前视偏差
+        else:
+            # 狩猎场模式：使用T日指标和收盘价判断信号
+            signal_bar = latest
+            current_price = latest['close']
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 计算支撑位和压力位
         if pd.notna(signal_bar['boll_lower']):
@@ -139,17 +179,29 @@ class BollingerStrategy(TimingStrategy):
         
         return result
     
+<<<<<<< HEAD
     def calculate_support(self, df: pd.DataFrame, key_date: Optional[str] = None) -> float:
+=======
+    def calculate_support(self, df: pd.DataFrame, key_date: Optional[str] = None, stock_code: str = "") -> float:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """计算布林带策略的支撑位
         
         Args:
             df: 股票数据
             key_date: 关键日期
+<<<<<<< HEAD
+=======
+            stock_code: 股票代码（用于指标缓存隔离）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
         Returns:
             支撑位价格
         """
+<<<<<<< HEAD
         df = self.calculate_indicators(df)
+=======
+        df = self.calculate_indicators(df, stock_code=stock_code)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         latest = df.iloc[-1]
         
         if pd.notna(latest['boll_lower']):

@@ -4,6 +4,10 @@
 """
 
 import sqlite3
+<<<<<<< HEAD
+=======
+import os
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 from datetime import datetime, date, timedelta
 import logging
 import threading
@@ -16,12 +20,18 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 
 from utils.db_manager import DBManager
+from utils.online_guard import backtest_offline
 from utils.akshare_fetcher import AKShareFetcher
 from strategy.strategy_registry import StrategyRegistry
 from trading.stock_score_api import calculate_stock_score
 from trading.backtest_scorer import BacktestScoreCalculator
 
+<<<<<<< HEAD
 from trading.timing_strategies import TimingStrategyFactory
+=======
+from trading.timing_strategies import (
+    TimingStrategyFactory, TURTLE_FAMILY_STRATEGIES, build_turtle_family_params)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 from trading.buy_filter import BuyPreFilter
 from utils.strategy_name_mapper import get_english_name
 from trading.strategy_kelly_loader import KellyCalculator
@@ -34,6 +44,94 @@ logger = logging.getLogger(__name__)
 # 回测全局锁，确保同一时刻只有一个回测任务执行，避免日志交错和资源竞争
 _backtest_lock = threading.Lock()
 
+<<<<<<< HEAD
+=======
+# ======================================================================
+# 单次回测进度（内存态；供 Web 端轮询展示预估完成时间，不落库、不影响回测结果）
+# 字段说明：
+#   running      : 是否正在执行
+#   percent      : 进度百分比（done_days/total_days*100，保留1位小数）
+#   done_days    : 已处理交易日数
+#   total_days   : 回测区间交易日总数
+#   current_date : 当前正在处理的交易日
+#   started_at   : 回测开始时间（用于计算已耗时和预估剩余）
+#   finished_at  : 回测结束时间
+#   message      : 状态说明文案
+#   result_id    : 回测结果ID（完成后填充）
+# ======================================================================
+BACKTEST_PROGRESS: Dict = {
+    'running': False,
+    'percent': 0.0,
+    'done_days': 0,
+    'total_days': 0,
+    'current_date': '',
+    'started_at': '',
+    'finished_at': '',
+    'message': '',
+    'result_id': None,
+}
+
+
+def get_backtest_progress() -> Dict:
+    """获取单次回测进度快照（供 GET /api/trading/backtest/progress 使用）
+
+    Returns:
+        Dict: 进度字典副本，避免外部直接修改内部状态
+    """
+    # 返回副本，防止外部修改污染内部状态
+    return dict(BACKTEST_PROGRESS)
+
+
+def _begin_backtest_progress(total_days: int) -> None:
+    """回测开始：重置进度并记录开始时间
+
+    Args:
+        total_days: 回测区间交易日总数
+    """
+    # 重置所有字段，记录开始时间供预估算法使用
+    BACKTEST_PROGRESS.update({
+        'running': True, 'percent': 0.0, 'done_days': 0,
+        'total_days': int(total_days or 0), 'current_date': '',
+        'message': '执行中', 'result_id': None, 'finished_at': '',
+        'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    })
+
+
+def _update_backtest_progress(done_days: int, total_days: int, current_date) -> None:
+    """每处理一个交易日更新一次进度
+
+    Args:
+        done_days: 已完成交易日数
+        total_days: 交易日总数
+        current_date: 当前正在处理的交易日
+    """
+    # 计算百分比，避免除零
+    total = int(total_days or 0)
+    BACKTEST_PROGRESS.update({
+        'done_days': int(done_days),
+        'total_days': total,
+        'percent': round(done_days / total * 100, 1) if total else 0.0,
+        'current_date': str(current_date),
+    })
+
+
+def _end_backtest_progress(message: str, ok: bool = True, result_id: int = None) -> None:
+    """回测结束（成功或失败）
+
+    Args:
+        message: 结束说明文案
+        ok: 是否成功（成功=True，失败=False）
+        result_id: 回测结果ID（成功时填充）
+    """
+    # 标记结束状态，记录完成时间
+    BACKTEST_PROGRESS.update({
+        'running': False,
+        'message': message,
+        'finished_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'result_id': result_id if ok else None,
+    })
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 def calculate_backtest_cost(stock_code: str, price: float, quantity: int, is_buy: bool) -> dict:
     """计算回测交易成本（不含滑点，按T+1开盘价处理）
@@ -80,9 +178,55 @@ def calculate_backtest_cost(stock_code: str, price: float, quantity: int, is_buy
         'is_shanghai': is_shanghai
     }
 
+<<<<<<< HEAD
+=======
+
+def should_register_sell_cool_down(trade_type: str, return_rate: float,
+                                   cool_down_threshold=None,
+                                   cool_down_on_any_sell: bool = True) -> bool:
+    """本次卖出是否需要登记冷却池（2026-09-16 新规则，回测/实盘**共用**同一判定）
+
+    规则：
+      - **任意清仓卖出**（trade_type='sell'）→ True：**盈利卖出同样冷却**；
+        `cool_down_on_any_sell=False` 时回退旧规则（仅亏损卖出且过亏损门槛）。
+      - 减仓（trade_type='reduce'）→ 仍按旧规则（亏损且过门槛）：减仓后仍持仓，
+        登记冷却会阻塞随后加仓（如海龟/海龟plus 的第二买点加仓）。
+
+    Args:
+        trade_type: 'sell'=清仓 / 'reduce'=减仓
+        return_rate: 本笔收益率（**百分数**，如 -3.5 表示 -3.5%）
+        cool_down_threshold: 亏损门槛（None = 无门槛）
+        cool_down_on_any_sell: 任意清仓卖出即冷却（默认 True）
+
+    Returns:
+        是否需要登记冷却池
+    """
+    is_full_sell = (trade_type or 'sell') == 'sell'
+    if is_full_sell and cool_down_on_any_sell:
+        return True
+    loss_over_threshold = (cool_down_threshold is None
+                           or return_rate <= cool_down_threshold)
+    return return_rate < 0 and loss_over_threshold
+
+
+# 【2026-09-22 口径修正】盈利因子"无亏损"时的上限哨兵值 ✓
+#   盈利因子 = 总盈利金额 / 总亏损金额；若**一笔亏损都没有**，该比值数学上为 +∞ ✗ ——
+#   +∞ 无法入库（JSON 序列化会产出非标准 Infinity ✗ → 前端 NaN ✗），也无法在表格里阅读 ✗。
+#   故统一用该上限值表示"无亏损"✓（前端看到 99.99 即可理解为"极高"✓）。
+#   回填脚本 tools 侧同值复用（见 backfill_backtest_metrics.py）✓
+PROFIT_FACTOR_NO_LOSS_CAP = 99.99
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 class BacktestEngine:
     """回测引擎核心类"""
+
+    # 【2026-09-15 暂时屏蔽】三日（滚动）未创新高止盈（sell_type=no_new_high）
+    #   True  = 原逻辑生效：普通回测需 config['enable_no_new_high_exit']=True；
+    #           自适应回测在 run_backtest 中默认开启（跟随本开关）
+    #   False = 全局屏蔽：无论 config 如何传值，该条件都不参与卖出判定
+    #   恢复方法：把本行改回 True（判定方法 _check_no_new_high_exit 与卖出块均完整保留）
+    ENABLE_NO_NEW_HIGH_EXIT = False
     
     def __init__(self, *args, **kwargs):
         """初始化回测引擎
@@ -119,6 +263,9 @@ class BacktestEngine:
         
         # 交易日历缓存
         self.trading_calendar_cache = {}  # {date_str: is_open} 交易日历缓存
+        # 【2026-09-25 M1】数据闸门结果 / 数据指纹（写入回测结果，便于归因 ✓）
+        self.data_gate_report: Optional[Dict] = None
+        self.data_fingerprint: Dict = {}
         self._sorted_trading_dates = []   # 排序后的交易日列表
         
         # 择时策略
@@ -148,6 +295,248 @@ class BacktestEngine:
         # 资金流向冷却池：资金流向异常时加入冷却
         self.fund_flow_cool_down_pool = {}  # {stock_code: cool_down_end_date}
         
+<<<<<<< HEAD
+=======
+    # ------------------------------------------------------------------
+    # ★【2026-09-27 用户要求 ✓】回测**启动参数快照** ✗✓
+    # ------------------------------------------------------------------
+    @staticmethod
+    def build_param_snapshot(config: Dict, tag: str = '',
+                            extra: Optional[Dict] = None,
+                            timing_strategy: str = '',
+                            timing_params: Optional[Dict] = None) -> Dict:
+        """★★【2026-10-03 用户要求 ✓】"回测结果保存时，保存测试的主要参数设置情况" ✗→✓ ★★
+
+        动机 ✗✓（用户真实痛点 ✓）：此前 `backtest_result` 只存**绩效数字** ✗ ⇒
+          两次回测收益不同时，**无法回答"到底哪项参数变了"** ✗✓（本会话就发生过：
+          只能靠**翻日志**+**手查 yaml**+逐笔比对交易明细才归因出来 ✓）。
+        ⇒ 现在把**本次生效的主要参数**随结果**一起落库** ✓（`params_snapshot` ✓，JSON ✓）
+          ⇒ 详情页 ✓ / 导出 ✓ / 事后 SQL 比对 ✓ 都能直接看到 ✓。
+
+        ⚠️ **口径只有一份** ✗✓：本函数同时供 `log_backtest_params`（日志 ✓）与
+          结果落库（DB ✓）使用 ⇒ **日志里看到的 = 库里存的 = 页面显示的** ✓✓。
+        ⚠️ 纯读 ✓、**绝不抛** ✗（快照失败绝不能连累回测 ✓ ⇒ 尽力而为 ✓，缺项省略 ✓）。
+
+        Args:
+            config: **已并入默认值**后的回测配置 ✓（调用点须在 `merge_backtest_defaults` 之后 ✓）
+            tag: 前缀（引擎名 ✓）
+            extra: 引擎专属补充项 ✓（如路由器开关 ✓）
+            timing_strategy / timing_params: 本次实际生效的择时策略及其参数 ✓
+                （★ 海龟参数就在这里 ✓ —— 用户刚调过 `n_entry/n_exit/atr_period` ✓，
+                  必须随结果留痕 ✓）
+
+        Returns:
+            dict ✓：结构化主参数 ✓ + `text`（人读多行 ✓，与日志**逐字相同** ✓）
+        """
+        from trading.pool_entry_rules import resolve_pool_entry_mode as _resolve_po_mode
+        from utils.backtest_mode import (effective as _eff, load_engine_yaml,
+                                         preset as _preset, resolve_mode)
+
+        ec = load_engine_yaml() or {}
+        pres = _preset(config, ec)
+
+        def _explicit(k) -> bool:
+            """是否**显式**给出 ✓ —— 三处都算 ✓（实测踩过 ✗：只看 config 会把
+            **yaml 顶层**键（如 `enable_limit_up_check` ✓）误标成"内置默认" ✗）：
+              ① `config` ✓（请求/DB + 已并入的 yaml `backtest:` 节 ✓）
+              ② yaml **顶层** ✓  ③ yaml `backtest:` 节 ✓
+            ★【2026-09-28】判据**提公共实现** ✓（`utils.backtest_mode.is_explicit` ✓）
+              ⇒ 与 ADX 摘要（`describe_adx_params` ✓）**同一判据** ✓
+              —— 免得两处"来源"标注各写一份、日久漂移 ✗✓。
+            """
+            from utils.backtest_mode import is_explicit as _is_explicit
+            return _is_explicit(k, config, ec)
+
+        def _src(k, val) -> str:
+            """**来源**标注 ✓：配置（请求/DB/yaml ✓）> 模式预设 ✓ > 内置默认 ✓"""
+            if _explicit(k):
+                return '配置'
+            if k in pres and pres[k] == val:
+                return '模式预设'
+            return '内置默认'
+
+        def _kv(k, default) -> str:
+            """**生效值**（不是"有没有设置"✗）+ 来源 ✓"""
+            val = _eff(k, config, ec, default)
+            return f'{k}={val}（{_src(k, val)} ✓）'
+
+        _po = _resolve_po_mode(config, ec)
+        # ★【2026-09-28 用户要求 ✓】**ADX 一族参数**改由**共享摘要**打出 ✗→✓
+        #   （`describe_adx_params` ✓ = 回测/实盘**同一实现** ✓）⇒ 本文件不再各算一份
+        #   `dir/ε` ✗（旧写法只打 2 项 ✗；现在含**入场口径/上下限/档位集合/缓冲带/守门** ✓）。
+        from trading.stock_adx_filter import describe_adx_params
+        # 滑点：请求 config > yaml `slippage` 节 > 引擎内置默认 ✓（与 `_slippage_rates` 同序 ✓）
+        #   注 ✓：本方法是 `@staticmethod` ✗ ⇒ 取类常量要用**类名** ✓（不能用 `self` ✗）
+        _sl = (config.get('slippage') or ec.get('slippage')
+               or BacktestEngine.DEFAULT_SLIPPAGE)
+        _sl_src = ('配置' if config.get('slippage') else
+                   ('yaml' if ec.get('slippage') else '内置默认'))
+        if isinstance(_sl, dict):
+            _sl_txt = (f'买{float(_sl.get("buy", 0)) * 100:.3f}%/'
+                       f'卖{float(_sl.get("sell", 0)) * 100:.3f}%')
+        else:
+            _sl_txt = str(_sl)
+
+        from trading.index_adx_filter import (describe_index_position_cap_params,
+                                              should_skip_selection_when_blocked)
+        _skip_sel = should_skip_selection_when_blocked(config)
+
+        pfx = '【回测参数' + (('·' + tag) if tag else '') + '】'
+        lines = [
+            f'{pfx} 策略={config.get("strategy_name") or "—"} '
+            f'区间={config.get("start_date")} ~ {config.get("end_date")} '
+            f'模式={resolve_mode(config, ec)}',
+            pfx + ' 开关: ' + ' | '.join([
+                _kv('enable_stock_adx_filter', False),
+                _kv('enable_add_open_rise_check', False),
+                f'pool_entry_mode={_po}（'
+                f'{"配置" if _explicit("pool_entry_mode") else "模式预设/兜底推导"} ✓）',
+                _kv('enable_no_new_high_exit', False),
+                f'slippage={_sl_txt}（{_sl_src} ✓）',
+            ]),
+            # ★★【2026-09-28 用户要求 ✓】**ADX 参数单独一行** ✗→✓ ★★
+            #   · 项最多 ✓：入场口径 ✓ / **上下限** ✓ / 档位集合 ✓ / 方向口径 ✓ /
+            #     `ε` ✓ / 缓冲带 ✓ / 高位守门 ✓ —— 塞进"开关"行会挤成一坨 ✗；
+            #   · 与**实盘**（`StrategyRunner` ✓）调**同一个** `describe_adx_params` ✓
+            #     ⇒ 两边日志**逐字可比** ✓（这正是"回测/实盘参数不一致"排查所需 ✓）；
+            #   · 打的是**真生效值** ✓（优先级链与引擎实际取值同一入口 `effective()` ✓）。
+            pfx + ' ADX: ' + describe_adx_params(config),
+            # ★★【2026-09-28 用户口径 ✓】**当日仓位上限**单独一行 ✗→✓ ★★
+            #   · 与"大盘闸门"是**两条独立规则** ✓（一条拦首仓✓、一条按持仓比例拦开新仓✓）
+            #     ⇒ 分两行打，A/B 时能分别确认 ✓；
+            #   · ⚠️ 阈值/比例/兜底档**全部打印** ✓ —— 用户**未定义**「18~25」这一档 ✓，
+            #     故必须让"走了兜底"✗ 在日志里**看得见** ✓（否则会被误读成规则生效 ✗）。
+            #   ★【2026-09-29 用户要求 ✓】同时打**跳过选股开关** ✓ —— 它是 A/B 的关键变量 ✗✓，
+            #     **必须每次回测都自证** ✓（否则两份结果无法判断差异来自该开关还是别的 ✗）。
+            pfx + ' 仓位上限: ' + describe_index_position_cap_params(config)
+            + f' | 不开新仓⇒**跳过选股**={_skip_sel}'
+              f'（{"默认 ✓" if _skip_sel else "**已关闭** ✗ = 旧行为（选股照跑、结果置 0 ✓）"}）',
+            pfx + ' 运行: ' + ' | '.join([
+                f'initial_capital={config.get("initial_capital")}',
+                f'buy_amount={config.get("buy_amount")}',
+                f'max_daily_buys={config.get("max_daily_buys")}',
+                'commission_rate=0.00015（**硬编码** ✓，不从配置读 ✗）',
+                'stamp_tax_rate=0.001（**硬编码** ✓，仅卖出 ✓）',
+                _kv('enable_limit_up_check', True),
+            ]) + ' —— 来源 ✓：配置=请求/DB/yaml 显式 ✓；模式预设=由 `backtest_mode` 推导 ✓',
+        ]
+        if extra:
+            lines.append(pfx + ' 引擎: '
+                         + ' | '.join(f'{k}={v}' for k, v in extra.items()))
+
+        # ---- 结构化主参数 ✓（供页面/导出/SQL 比对 ✓；取不到就不放 ✗，绝不抛 ✓）----
+        snap: Dict = {
+            'mode': resolve_mode(config, ec),
+            'strategy_name': config.get('strategy_name') or '',
+            # ★ 区间也要留痕 ✓（两次回测**范围不同**时，先要能看出来 ✗✓ —— 本会话就踩过：
+            #   09-29 与 09-30 两行看着"同策略同区间"✗，实际终点差一天 ✓）
+            'start_date': config.get('start_date'),
+            'end_date': config.get('end_date'),
+            'timing_strategy': timing_strategy or '',
+            'timing_params': dict(timing_params or {}),      # ★ 海龟参数在此 ✓
+            'pool_entry_mode': _po,
+            'skip_selection_when_no_new_position': _skip_sel,
+            'slippage': _sl_txt,
+            'run': {k: config.get(k) for k in (
+                'initial_capital', 'buy_amount', 'max_daily_buys',
+                'hold_period', 'stop_loss', 'take_profit')},
+            'text': '\n'.join(lines),
+        }
+        try:
+            from trading.stock_adx_filter import (is_adx_filter_enabled,
+                                                  is_entry_above_ma_required,
+                                                  resolve_entry_ma_period)
+            snap['stock_adx'] = {
+                'enabled': is_adx_filter_enabled(config),
+                'require_above_ma': is_entry_above_ma_required(config),
+                'ma_period': resolve_entry_ma_period(config)}
+        except Exception:
+            pass
+        try:
+            from trading.index_adx_filter import (is_index_position_cap_enabled,
+                                                  resolve_cap_low_require_above_ma,
+                                                  resolve_cap_ma_period,
+                                                  resolve_index_adx_code)
+            snap['index_cap'] = {
+                'enabled': is_index_position_cap_enabled(config),
+                'require_above_ma': resolve_cap_low_require_above_ma(config),
+                'ma_period': resolve_cap_ma_period(config),
+                'index_code': resolve_index_adx_code(config)}
+        except Exception:
+            pass
+        try:
+            from trading.stock_adx_filter import is_add_open_rise_enabled
+            snap['add_open_rise_check'] = is_add_open_rise_enabled(config)
+        except Exception:
+            pass
+        snap['enable_limit_up_check'] = _eff('enable_limit_up_check', config, ec, True)
+        if extra:
+            snap['engine_extra'] = dict(extra)
+        return snap
+
+    @staticmethod
+    def log_backtest_params(config: Dict, tag: str = '',
+                            extra: Optional[Dict] = None) -> Dict:
+        """把本次回测的**有效参数**打成日志 ✓（一行一类 ✓，便于 A/B 事后核对 ✓）
+
+        动机 ✗✓（用户实测反馈 ✓）：跑 A/B 时**无从确认**开关到底开没开 ✗ ——
+        尤其 `enable_adx_falloff` ✗：它**只在**走 `RegimeRouter` 的引擎里存在 ✗
+        ⇒ 普通引擎"日志里没有它"✗ **极易被误读成"没生效"** ✗✗（用户已踩 ✓）。
+        ⇒ 本快照把两类键**都**打出 ✓，并把**不适用**的情形**明写**出来 ✓（不沉默 ✗）。
+
+        ★【2026-10-03 用户要求 ✓】打印逻辑已提为 `build_param_snapshot` ✓
+          （⇒ **日志 = 落库 = 页面** 三处同一份 ✓）；**日志文案逐字未变** ✗✓
+          （既有日志断言照旧 ✓）。本方法改为**返回快照 dict** ✓（旧调用方不看返回值 ⇒ 兼容 ✓）。
+
+        Args:
+            config: **已并入默认值**后的回测配置 ✓（调用点须在 `merge_backtest_defaults` 之后 ✓）
+            tag: 前缀（引擎名 / A-B 组名 ✓）
+            extra: 引擎专属补充项 ✓（如**路由器开关本体** ✓）
+        """
+        snap = BacktestEngine.build_param_snapshot(config, tag=tag, extra=extra)
+        for _line in (snap.get('text') or '').splitlines():
+            logger.info(_line)
+        return snap
+
+    # ------------------------------------------------------------------
+    # ★【2026-09-28】**回测终点自动回退** ✓ —— 当日数据未产出时 ✗→✓
+    # ------------------------------------------------------------------
+    def _resolve_end_date(self, end_date: str) -> str:
+        """把「**当日数据尚未产出**」的终点回退到上一交易日 ✓
+
+        背景 ✗✓（2026-09-28 用户实测 ✓）：08:47（周一·**开盘前** ✗）跑批量回测 ⇒
+          `【回测数据闸门】… 个股资金流向(stock_moneyflow_daily)：[moneyflow_ths] 缺 1 天: 2026-09-28` ✗。
+          根因 ✓：闸门**逐日**要求 `[起点, 终点]` 每个交易日的**本地**数据齐备 ✓，而**当日**
+          数据（资金流 / K 线 / 大盘 ADX ✓）**收盘后**才采集入库 ✗ ⇒ 终点=今天 且未收盘 ⇒
+          **必然**失败 ✗；且原文案让人"去运行数据更新"✗ —— 开盘前**同样取不到** ✗✓。
+
+        做法 ✓：规则**完全复用实盘选股** ✓（`web_server.py:989-1016` 同口径 ✓）——
+          置入 `utils.trade_date_utils.resolve_end_date_for_data` ✓（**单一实现** ✓，两引擎共用 ✓）。
+
+        ⚠️ **只回退"今天且未收盘"与"非交易日"** ✗✓：历史区间缺数据 = **真缺数据** ✗
+        ⇒ **不回退** ✓ ⇒ 继续由闸门**如实拦下** ✓（绝不掩盖 ✗）。
+
+        ⚠️ 格式 ✓：回退后**保持调用方原格式** ✓（`20260928` → `20260925` ✓），
+        未回退则**原样**返回 ✓ —— 避免污染结果里的 `start_date/end_date` 字段 ✓。
+
+        异常兜底 ✓：任何异常都**原样返回** ✓（绝不让"回退逻辑"本身阻断回测 ✗）。
+        """
+        try:
+            from utils.trade_date_utils import resolve_end_date_for_data
+            eff, reason = resolve_end_date_for_data(end_date)
+        except Exception as e:
+            logger.warning(f'【回测终点回退】判定异常（原样使用 {end_date} ✓）: {e}')
+            return end_date
+        if not reason:
+            return eff
+        logger.warning(
+            f'【回测终点回退】{end_date}（{reason} ✗）→ {eff} ✓ —— 当日数据'
+            f'（资金流/K线/大盘ADX ✓）**收盘后才采集入库** ✗，此刻不可能有 ✓；'
+            f'若确需跑当日请改到 **15:01 之后**并先跑"数据更新" ✓')
+        return eff.replace('-', '') if ('-' not in str(end_date)) else eff
+
+    @backtest_offline          # 【2026-09-25 契约 ✓】回测入口**自动**开启离线保护 ✗（无例外 ✓）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     def run_backtest(self, strategy_name: str, config: Dict) -> Dict:
         """运行回测
         
@@ -158,6 +547,20 @@ class BacktestEngine:
         Returns:
             回测结果字典
         """
+<<<<<<< HEAD
+=======
+        # 【2026-09-27】把 yaml `backtest:` 节作为**默认值**并入 ✓
+        #   ⇒ 优先级：请求 config（Web/流水线/DB ✓）> yaml `backtest:` 节 > 引擎内置默认 ✓
+        #   ⇒ 只补缺 ✗✓（`setdefault` ✓）⇒ **不覆盖**显式传入 ✓
+        from utils.backtest_mode import merge_backtest_defaults
+        config = merge_backtest_defaults(config)
+
+        # ★【2026-09-27】启动参数快照 ✓（用户要求 ✓：A/B 时能一眼核对开关 ✓）
+        #   ⚠️【2026-09-28】大盘降温机制**已整体移除** ✗✓ ⇒ 不再有该项 ✓
+        #   （本引擎本就不含 `RegimeRouter` ✓；要看大盘档位请用 `RegimeBacktestEngine` ✓）
+        self.log_backtest_params(config, tag='普通引擎')
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 获取回测锁，确保同一时刻只有一个回测任务执行
         if not _backtest_lock.acquire(blocking=False):
             logger.warning(f"回测任务正在执行中，策略 {strategy_name} 等待...")
@@ -176,10 +579,20 @@ class BacktestEngine:
             self.stock_filtered_cache.clear()
             self.buy_candidate_pool.clear()
             
+<<<<<<< HEAD
+=======
+            # 【2026-09-23】双边成交滑点（默认买卖各 0.3% ✓）—— 本次回测全程生效 ✓
+            self._slippage = self._slippage_rates(config)
+            logger.info(f"成交滑点: 买入 {self._slippage['buy'] * 100:.3f}% / "
+                        f"卖出 {self._slippage['sell'] * 100:.3f}%"
+                        f"（对最终成交价双边调整 ✓；设为 0 即关闭 ✓）")
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             # 初始化择时策略
             timing_strategy_name = config.get('timing_strategy', 'support')
             timing_params = config.get('timing_params', {})
             
+<<<<<<< HEAD
             # 修复参数传递：如果timing_params中没有对应策略的配置，尝试直接从config中获取
             strategy_params = timing_params.get(timing_strategy_name, {})
             
@@ -199,10 +612,19 @@ class BacktestEngine:
                 turtle_specific_params = {k: v for k, v in turtle_specific_params.items() if v is not None}
                 strategy_params.update(turtle_specific_params)
             
+=======
+            # 海龟类策略（海龟/低位海龟/海龟plus）参数合并：统一走共享实现
+            # （名单与合并键只有一份，见 trading.timing_strategies），
+            # 避免新增海龟类策略时各处漏改 → 回退到代码内默认预设（short = 10/5/10）
+            strategy_params = build_turtle_family_params(
+                config, timing_params, timing_strategy_name)
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             self.timing_strategy = TimingStrategyFactory.create_strategy(
                 timing_strategy_name, strategy_params
             )
             logger.info(f"初始化择时策略: {timing_strategy_name}")
+<<<<<<< HEAD
             
             # 存储择时策略名称和参数，用于后续日志记录和结果输出
             self.timing_strategy_name = timing_strategy_name
@@ -217,6 +639,33 @@ class BacktestEngine:
                            f"add_atr={strategy_params.get('add_atr')}, "
                            f"exit_atr={strategy_params.get('exit_atr')}, "
                            f"preset={strategy_params.get('preset')}")
+=======
+
+            # 存储择时策略名称和参数，用于后续日志记录和结果输出
+            self.timing_strategy_name = timing_strategy_name
+            self.timing_strategy_params = strategy_params
+
+            # 记录海龟类策略**真正生效**的参数（含海龟plus 的前溯窗口/加仓上限）
+            # 【2026-09-23】改为打印**策略实例**上的取值 ✓：
+            #   原实现打印的是"合并后的参数字典" ✗ —— 配置里没显式写出的项会显示 None ✗
+            #   （如 entry_atr / add_atr / preset ✗），看起来像"参数没读取成功" ✗，
+            #   实际它们是走**策略代码默认值** ✓（entry_atr=0.02 / add_atr=0.5 / preset=short ✓）。
+            if timing_strategy_name in TURTLE_FAMILY_STRATEGIES:
+                _st = self.timing_strategy
+                logger.info(
+                    f"{timing_strategy_name}生效参数: "
+                    f"n_entry={getattr(_st, 'n_entry', None)}, "
+                    f"n_exit={getattr(_st, 'n_exit', None)}, "
+                    f"atr_period={getattr(_st, 'atr_period', None)}, "
+                    f"entry_atr={getattr(_st, 'entry_atr', None)}, "
+                    f"add_atr={getattr(_st, 'add_atr', None)}, "
+                    f"exit_atr={getattr(_st, 'exit_atr', None)}, "
+                    f"preset={getattr(_st, 'preset_name', None)}, "
+                    f"lookback_days={getattr(_st, 'lookback_days', None)}, "
+                    f"max_additions={getattr(_st, 'max_additions', None)}, "
+                    f"add_profit_min={getattr(_st, 'add_profit_min', None)} "
+                    f"（未出现在配置中的项 = 策略代码默认值 ✓，非读取失败 ✓）")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
 
             
@@ -226,6 +675,16 @@ class BacktestEngine:
             
             if not start_date or not end_date:
                 raise ValueError("回测开始日期和结束日期不能为空")
+
+            # ★【2026-09-28】终点**自动回退** ✓ —— 必须在此处 ✓（**闸门之前** ✗✓）：
+            #   闸门逐日要求本地数据齐备 ✓，而**当日**数据收盘后才入库 ✗ ⇒ 终点=今天
+            #   且未收盘 ⇒ 必然报"缺 1 天: 今天"✗（用户实测 2026-09-28 08:47 ✗）。
+            #   详见 `_resolve_end_date` docstring ✓（规则与实盘选股同口径 ✓）。
+            end_date = self._resolve_end_date(end_date)
+            if str(start_date).replace('-', '')[:8] > str(end_date).replace('-', '')[:8]:
+                raise ValueError(f'回测起点 {start_date} **晚于**可用终点 {end_date} ✗ —— '
+                                 f'（终点已回退到"最近一个数据已齐备的交易日"✓）'
+                                 f'请把起点提前 ✓')
             
             # 2. 确保策略已注册
             if not self.strategy_registry.strategies:
@@ -236,6 +695,15 @@ class BacktestEngine:
             
             # 4. 获取回测交易日列表并打印
             date_range = self._get_trading_dates(start_date, end_date)
+
+            # 【2026-09-25 M1】回测数据闸门：四类本地数据（日历/资金流/基本面/事件）
+            #   覆盖校验 + 数据指纹 ✓ —— 缺失默认**直接终止** ✗（不再静默漂移 ✓）
+            #   严格开关优先级：环境变量 KHUNTER_DATA_STRICT > 引擎配置 data.strict > 默认 true
+            # ★【2026-09-29】把**本次请求 config** 一并传入 ✓ —— 闸门要据
+            #   `pool_entry_mode=direct` 决定是否豁免"资金流/基本面/公告"三项校验 ✓
+            #   （只读 yaml ✗ 会漏掉"请求里显式指定 direct"的情形 ✗）。
+            self.data_gate_report = self._run_data_gate(start_date, end_date, date_range,
+                                                        config)
             if not date_range:
                 raise ValueError(f"回测期间 {start_date} ~ {end_date} 没有交易日")
             
@@ -252,13 +720,40 @@ class BacktestEngine:
             
             # 回测配置：同一只股票最大买入次数
             max_buy_count_per_stock = config.get('max_buy_count_per_stock', 6)
+<<<<<<< HEAD
             # 股票累计买入次数计数器 {stock_code: buy_count}
             stock_buy_count = {}
             
+=======
+            # 回测配置：买入股票池遍历顺序（0=正序老股票优先，1=倒序新加入股票优先）
+            engine_config = self._load_engine_config()
+            reverse_pool_order = engine_config.get('reverse_pool_order', 0)
+
+            # 股票池移除模式：config 传入优先，其次配置文件（backtest_engine_config.yaml）的 pool_mode，最后默认 persistent
+            self.pool_mode = config.get('pool_mode') or engine_config.get('pool_mode', 'persistent')
+            if self.pool_mode not in ('persistent', 'rotation'):
+                logger.warning(f"未知 pool_mode={self.pool_mode}，回退为 persistent")
+                self.pool_mode = 'persistent'
+            logger.info(f"股票池模式 pool_mode={self.pool_mode}（来源：{'config' if config.get('pool_mode') else 'config_file'}）")
+            # 股票累计买入次数计数器 {stock_code: buy_count}
+            stock_buy_count = {}
+
+            # 初始化单次回测进度（供 Web 端轮询展示预估完成时间）
+            # 传入交易日总数，用于计算百分比和预估剩余时间
+            _begin_backtest_progress(len(date_range))
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             for i, current_date in enumerate(date_range):
                 logger.info(f"\n============================================================")
                 logger.info(f"处理日期: {current_date}")
                 logger.info(f"============================================================")
+<<<<<<< HEAD
+=======
+
+                # 每个交易日处理前更新进度（i+1 表示已开始处理第 i+1 天）
+                # 放在循环开头，前端能立即看到"开始处理当天"的反馈
+                _update_backtest_progress(i + 1, len(date_range), current_date)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 
                 # 初始化当日买入计数
                 daily_buys = 0
@@ -328,16 +823,54 @@ class BacktestEngine:
                 # 检查股票池移除条件（在选股之前执行，使用前一日收盘价）
                 if self.buy_candidate_pool:
                     logger.info(f"开始检查股票池移除条件，当前股票池数量: {len(self.buy_candidate_pool)}")
+<<<<<<< HEAD
                     removed = self._check_pool_removal(current_date, config)
+=======
+                    # 构造当前持仓代码集合：轮动模式下用于移除非持仓候选
+                    held_codes = {pos.get('stock_code') for pos in positions if pos.get('stock_code')}
+                    removed = self._check_pool_removal(current_date, config, held_codes=held_codes)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     if removed:
                         logger.info(f"股票池移除 {len(removed)} 只股票")
                 
                 # 执行选股获得前一日的选股结果
                 selection_date = self._get_previous_trading_day(current_date)
+<<<<<<< HEAD
                 logger.info(f"执行选股日期: {selection_date}")
                 
                 # 执行选股、评分、筛选，得到候选股票池
                 candidate_stocks = self._select_and_score_stocks(strategy_name, selection_date, config)
+=======
+
+                # ★★【2026-09-29 用户要求 ✓】**当日不开新仓 ⇒ 跳过选股** ✗→✓ ★★
+                #   用户原话 ✓："回测时，如果判定当日不开新仓，**跳过选股执行过程**，
+                #   直接返回选股结果为 0" ✓；随后 ✓："**建议作为开关参数，便于对比
+                #   回测效果**" ✓。
+                #   · **开关** ✓：`skip_selection_when_no_new_position`（默认 **开** ✓）
+                #     ⇒ 关掉即**旧行为**（选股/评分照跑、结果置 0 ✓）⇒ 可 A/B ✓；
+                #   · ⚠️ 跳过会让"当日 0% 档下**本该入池**的候选**不进池**"✗ ⇒
+                #     **次日**买入集可能不同 ✗（候选池**跨日持久** ✓）
+                #     —— 故**必须可切换** ✓（这正是开关存在的理由 ✓）；
+                #   · ⚠️ **卖出 / 池维护 / 加仓**都不受影响 ✓（卖出与池维护在上方 ✓；
+                #     加仓本就不过仓位上限 ✓ —— 见下方首仓分支 ✓）。
+                # ★★★★【2026-10-07 审计修复 ✓】**回测硬钉"前一根"** ✗→✓ ★★★★
+                #   回测执行日 = T 日**开盘**成交 ⇒ T 日收盘 ADX 当天不存在 ✗
+                #   ⇒ 若允许 yaml 把它配成"当天"✗ ⇒ **前视** ✗✗（曲线虚高、实盘复现不出 ✗）
+                #   ⇒ 用 `backtest_gate_config()` 钉死 ✓（与下方买入分支**同一份** ✓
+                #     ⇒ "跳过选股 ✓ / 仓位上限 ✓ / 个股闸门 ✓"三者**必然同一时点** ✓）。
+                from trading.index_adx_filter import backtest_gate_config as _bt_cfg
+                _no_new = self._day_no_new_position(current_date, _bt_cfg(config))
+                if _no_new is not None:
+                    candidate_stocks = []
+                    logger.info(
+                        f"【跳过选股】{current_date} 当日**不开新仓** ✓ ⇒ 选股结果 = **0** ✓"
+                        f"（跳过选股/评分 ✓；卖出与加仓不受影响 ✓）；"
+                        f"{_no_new.get('rule') or ''}")
+                else:
+                    logger.info(f"执行选股日期: {selection_date}")
+                    # 执行选股、评分、筛选，得到候选股票池
+                    candidate_stocks = self._select_and_score_stocks(strategy_name, selection_date, config)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 
                 # 将新选出的股票加入可买股票池
                 new_added = 0
@@ -375,6 +908,13 @@ class BacktestEngine:
                             logger.info(f"股票 {stock['stock_code']} {stock['stock_name']} 加入可买股票池, 支撑位计算失败")
                         new_added += 1
                 
+                # ===== 持仓股自动入池（当日已卖出的不计），便于加仓 =====
+                from trading.pool_entry_rules import resolve_auto_add_holdings
+
+                if resolve_auto_add_holdings(config, self._load_engine_config()):
+                    self._add_holdings_to_pool(positions, current_date,
+                                               today_sold_stocks, strategy_name)
+
                 # 处理可买股票池
                 logger.info(f"\n当前可买股票池数量: {len(self.buy_candidate_pool)} (新增 {new_added} 只)")
                 if self.buy_candidate_pool:
@@ -392,7 +932,14 @@ class BacktestEngine:
                 # 记录当日已买入的股票代码
                 today_bought_stocks = set()
                 
-                for candidate in self.buy_candidate_pool:
+                # 根据配置决定股票池遍历顺序
+                # 正序（reverse_pool_order=0）：老股票优先，新加入股票后处理
+                # 倒序（reverse_pool_order=1）：新加入股票优先，老股票后处理
+                pool_iter = reversed(self.buy_candidate_pool) if reverse_pool_order else self.buy_candidate_pool
+                if reverse_pool_order:
+                    logger.info("买入顺序：倒序处理（新加入股票优先）")
+                
+                for candidate in pool_iter:
                     stock = candidate['stock']
                     stock_code = stock['stock_code']
                     added_date = candidate['added_date']
@@ -433,12 +980,30 @@ class BacktestEngine:
                             continue
                     # ========== 冷却期和连续亏损限制检查结束 ==========
                     
+<<<<<<< HEAD
                     # 检查当日最大买入限制
                     if daily_buys >= max_daily_buys:
                         logger.info(f"【未执行买入】{stock_code} {stock.get('stock_name', '')}: 达到今日买入次数{max_daily_buys}次限制，未执行")
                         remaining_candidates.append(candidate)
                         continue
                     
+=======
+                    # 当日已卖出的股票不再买入（与实盘一致）
+                    # 说明：today_sold_stocks 此前只被写入、从未在买入循环读取，
+                    #       导致回测允许"当日卖出后当日买回"，与实盘行为不一致。
+                    if stock_code in today_sold_stocks:
+                        logger.info(f"【未买入】{stock_code} {stock.get('stock_name', '')}: "
+                                    f"当日已卖出，不再买入")
+                        remaining_candidates.append(candidate)
+                        continue
+                    
+                    # 检查当日最大买入限制
+                    if daily_buys >= max_daily_buys:
+                        logger.info(f"【未执行买入】{stock_code} {stock.get('stock_name', '')}: 达到今日买入次数{max_daily_buys}次限制，未执行")
+                        remaining_candidates.append(candidate)
+                        continue
+                    
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     # 获取股票数据
                     df = self.stock_filtered_cache.get(stock_code)
                     if df is None:
@@ -482,6 +1047,21 @@ class BacktestEngine:
                                 }])
                                 df_to_date = pd.concat([df_to_date, new_row], ignore_index=True)
                                 logger.info(f"股票 {stock_code} 添加实时数据: {date_str} 开盘={open_price}, 收盘={realtime_price}")
+<<<<<<< HEAD
+=======
+
+                                # 同步回写缓存：否则后续 _has_trading_data_on_date（停牌/退市检查）、
+                                # 卖出/止损等直接读缓存的逻辑仍看不到当日数据，会把"已有实时数据"
+                                # 误判为停牌而跳过买入。
+                                try:
+                                    merged = pd.concat([df, new_row], ignore_index=True)
+                                    self.stock_filtered_cache[stock_code] = merged
+                                    if stock_code in self.stock_data_cache:
+                                        self.stock_data_cache[stock_code] = merged.copy()
+                                except Exception as cache_err:
+                                    logger.warning(
+                                        f"股票 {stock_code} 实时数据回写缓存失败: {cache_err}")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                         except Exception as e:
                             logger.warning(f"股票 {stock_code} 获取实时数据失败: {str(e)}")
                     
@@ -499,6 +1079,7 @@ class BacktestEngine:
                             break
                     
                     # 调用策略获取完整信号（策略会根据是否有持仓判断新买入或加仓）
+<<<<<<< HEAD
                     result = None
                     if self.timing_strategy:
                         result = self.timing_strategy.get_timing_result(df_to_date, existing_pos, current_capital)
@@ -506,6 +1087,25 @@ class BacktestEngine:
                         logger.info(f"{timing_name}信号: is_buy={result.is_buy}, is_sell={result.is_sell}, "
                                    f"buy_qty={result.buy_quantity}, sell_qty={result.sell_quantity}, "
                                    f"type={result.trade_type}, msg={result.message}")
+=======
+                    # 传入 stock_code 以隔离技术指标缓存，避免不同股票间指标复用
+                    result = None
+                    if self.timing_strategy:
+                        result = self.timing_strategy.get_timing_result(df_to_date, existing_pos, current_capital, stock_code=stock_code)
+                        timing_name = self.timing_strategy.__class__.__name__
+                        # 【2026-09-28 减噪 ✗→✓】原文案**每只股票 × 每个交易日**都打 INFO ✗ ——
+                        #   实测单日 **21,117 行** ✗（占全天 7.4% ✗，多数是"无事发生"✗）
+                        #   ⇒ **只在真有信号（买/卖 ✓）时 INFO** ✓，其余降 `debug` ✓：
+                        #     信号一条不少 ✓，噪声 -98% ✓。
+                        _sig_msg = (f"{timing_name}信号: is_buy={result.is_buy}, "
+                                    f"is_sell={result.is_sell}, buy_qty={result.buy_quantity}, "
+                                    f"sell_qty={result.sell_quantity}, type={result.trade_type}, "
+                                    f"msg={result.message}")
+                        if result.is_buy or result.is_sell:
+                            logger.info(_sig_msg)
+                        else:
+                            logger.debug(_sig_msg)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     
                     # 判断是否买入
                     is_buy = result.is_buy if result else False
@@ -514,6 +1114,7 @@ class BacktestEngine:
                         remaining_candidates.append(candidate)
                         continue
                     
+<<<<<<< HEAD
                     # 买入前K线过滤检查
                     filter_result = BuyPreFilter.check_filters(df_to_date, stock_code)
                     if not filter_result['passed']:
@@ -524,10 +1125,133 @@ class BacktestEngine:
                     # 获取买入价格（以开盘价为准）
                     buy_price = self._get_stock_price(stock_code, current_date, 'open')
                     logger.info(f"股票 {current_date} {stock_code} {stock['stock_name']} 买入价格: {buy_price}")
+=======
+                    # 买入前K线过滤检查（仅首次建仓；加仓不做该过滤）
+                    # 说明：加仓由择时策略自身条件把关（如盈利门槛 + 趋势/BIAS/缩量），
+                    #       再叠加"20日涨幅>50%"等规则会把已大幅盈利的持仓加仓误杀；
+                    #       同时与实盘运行器保持一致（运行器加仓本就不做涨幅/涨停基因检查）。
+                    # 涨停基因（规则4）可通过 enable_limit_up_check=false 关闭以提升成交率（默认开启）
+                    # 优先级：config 传入 > config/backtest_engine_config.yaml > 默认 true
+                    if self._should_apply_buy_filter(result, existing_pos):
+                        limit_up_enabled = config.get(
+                            'enable_limit_up_check',
+                            self._load_engine_config().get('enable_limit_up_check', True))
+                        filter_result = BuyPreFilter.check_filters_with_config(
+                            df_to_date, stock_code,
+                            {'enable_limit_up_check': limit_up_enabled})
+                        if not filter_result['passed']:
+                            logger.info(f"【未买入】{stock_code} {stock['stock_name']}: K线过滤未通过 - {filter_result['reason']}")
+                            remaining_candidates.append(candidate)
+                            continue
+
+                    # ---------- ★【2026-09-28 用户口径 ✓】**开新仓只由「当日仓位上限」总控** ----------
+                    #   用户原话 ✓："上一轮的『大盘 ADX 首仓闸门』（ADX>25 ∧ dir上升 才许开首仓）
+                    #     **这个规则取消，由仓位上限总控**" ✓
+                    #   ⇒ 原「大盘 ADX 硬闸门」（`index_adx_entry_gate` ✓）**已整体删除** ✗
+                    #     （它的"非 `ADX>25 ∧ 上升` 就不许开仓"职责，已由仓位上限的
+                    #      **「其他 ⇒ 0%」**档承担 ✓；且 `ADX<18 ∧ 上升` 现在**允许**开仓、
+                    #      只限 50% ✓ —— 这正是用户规则2 ✓，硬闸门在时它被整段挡死 ✗）。
+                    # ★【2026-10-07 审计修复 ✓】本函数内**大盘与个股共用**的闸门 cfg ✓
+                    #   （钉死"前一根" ✓ ⇒ 两者**不可能**分时点 ✓；须在 `if` 之前定义 ✓
+                    #     —— 因为个股闸门在 `if existing_pos is None` **之外**也要用 ✓）
+                    from trading.index_adx_filter import backtest_gate_config as _bt_cfg
+                    _gate_cfg = _bt_cfg(config)
+                    if existing_pos is None:
+                        # ★【2026-09-28 用户口径 ✓】**当日仓位上限** ✓（**仅约束开新仓** ✗加仓）
+                        #   规则 ✓：大盘 `ADX>25` ∧ `dir上升` ⇒ 100% ✓；`ADX<18` ∧ `dir上升`
+                        #     ⇒ 50% ✓；**其他 ⇒ 0% ⇒ 不允许开仓** ✓；**持仓 ≥ 上限 ⇒ 停开新仓** ✓
+                        #   ⚠️ **加仓不检查** ✗（本块只在 `existing_pos is None` ✓ 内 ✓）
+                        #   ⚠️ 比例口径 ✓ = `1 − 现金/总资产` ✓（与凯利同用**前一日收盘价** ✓
+                        #     估值 ⇒ 无未来函数 ✓；**按日缓存** ✓ 见 `_current_position_ratio` ✓）
+                        #   ⚠️ 防前视 ✓：上限判定内部只用 **T-1** ✓（见 `index_adx_filter` ✓）
+                        from trading.index_adx_filter import (
+                            format_index_position_cap_result, index_position_cap_gate,
+                            is_index_position_cap_enabled)
+                        if is_index_position_cap_enabled(_gate_cfg):
+                            _cur_ratio = self._current_position_ratio(
+                                current_date, positions, current_capital)
+                            _cap_gate = index_position_cap_gate(
+                                current_date, _cur_ratio, _gate_cfg,
+                                stock_code=stock_code)     # ★ 板块回退需知其所属板块 ✓
+                            # ★★【2026-10-05 用户要求 ✓】**板块回退** ✗→✓ ★★
+                            #   全A 兜底 0% ✗ 时：若本票属**科创板/创业板** 且该板块指数
+                            #   （`000688.SH` ✓ / `399006.SZ` ✓）**放行** ⇒ 按**部分放行**
+                            #   （规则2 比例 ✓）；**其它板块的票仍 0%** ✗✓。
+                            #   ⚠️ 判据/阈值全在 `index_adx_filter` ✓（本处**不写阈值** ✗）。
+                            if not _cap_gate['passed']:
+                                logger.info(
+                                    f"【未买入】{stock_code} {stock['stock_name']}: "
+                                    f"{format_index_position_cap_result(_cap_gate)}")
+                                remaining_candidates.append(candidate)
+                                continue
+                            logger.info(f"【仓位上限】{current_date} {stock_code} "
+                                        f"{stock['stock_name']}: "
+                                        f"{format_index_position_cap_result(_cap_gate)}")
+
+                    # ---------- 【2026-09-26 §5.6】个股 ADX 闸门 ✓（**首仓 + 加仓 均生效** ✗✓）----------
+                    #   首仓 ✓：只做 ADX 判定 ✓（K线过滤已在上方 ✓）
+                    #   加仓 ✓：**规则2（当日开盘涨跌幅 ±4%）** + ADX 判定 ✓（规则1/3/4 **不过滤** ✗）
+                    #   开关 ✓：`enable_stock_adx_filter`（默认**关** ✗ = 现状 ✓）
+                    #          `enable_add_open_rise_check`（默认**开** ✓，用户定稿 ✓）
+                    if self._should_apply_adx_filter(result, existing_pos):
+                        from trading.stock_adx_filter import (add_entry_gate,
+                                                              adx_entry_gate)
+                        # ★【2026-10-07 审计修复 ✓】用**同一份** `_gate_cfg` ✗→✓
+                        #   （= 上方大盘档位用的那份 ✓ ⇒ **同一时点** ✓；原传 `config` ✗
+                        #     ⇒ 一旦 yaml 开了"当天" ⇒ 大盘 T-1 ✗ / 个股 T ✗ 分叉 ✓）
+                        adx_gate = (add_entry_gate(df_to_date, stock_code, _gate_cfg,
+                                                   signal_date=current_date)
+                                    if existing_pos is not None
+                                    else adx_entry_gate(df_to_date, stock_code, _gate_cfg,
+                                                        signal_date=current_date))
+                        if not adx_gate['passed']:
+                            # ★【2026-09-28】**未通过**分支也必须带 `ADX(T-1)=…` ✗✓ ——
+                            #   此前只裸打 `reason` ✗ ⇒ 日志里**看不到 ADX 数值** ✗
+                            #   （用户实测报障："闸门不通过，但没有明确 adx 数值"✗）⇒
+                            #   改用 `format_gate_result` ✓（与"通过"分支**同格式** ✓）。
+                            from trading.stock_adx_filter import format_gate_result
+                            logger.info(f"【未买入】{stock_code} {stock['stock_name']}: "
+                                        f"{format_gate_result(adx_gate)}")
+                            remaining_candidates.append(candidate)
+                            continue
+                        # ★【2026-09-27 用户要求 ✓】**通过也要留痕** ✗✓ ——
+                        #   否则"买入成功时看不到个股 ADX 信息"✗（实测反馈 ✓）
+                        from trading.stock_adx_filter import format_gate_result
+                        logger.info(f"【ADX 闸门】{current_date} {stock_code} "
+                                    f"{stock['stock_name']}: {format_gate_result(adx_gate)}")
+
+                    # 停牌/退市检查：确认当日有真实行情数据（防止使用前一日收盘价兜底）
+                    if not self._has_trading_data_on_date(stock_code, current_date):
+                        logger.info(f"【未买入】{stock_code} {stock['stock_name']}: 当日{current_date}无行情数据（停牌/退市），跳过")
+                        remaining_candidates.append(candidate)
+                        continue
+                    
+                    # 解析买入执行方式：open=开盘价成交(原行为) / ma_limit=均线委托+滑点+触达成交
+                    exec_result = self._resolve_buy_execution(
+                        stock_code, current_date, config, df_to_date)
+                    buy_price = exec_result['price']
+                    # 【2026-09-23】买入滑点：成交价取不利方向（更贵 ✓）
+                    #   ma_limit 模式的委托价已自带 slippage ✗ → 该模式不叠加 ✓（避免双计 ✗）
+                    _slip = getattr(self, '_slippage', self.DEFAULT_SLIPPAGE)
+                    _buy_slip = 0.0 if exec_result.get('mode') == 'ma_limit' else _slip['buy']
+                    if buy_price and buy_price > 0 and _buy_slip:
+                        buy_price = round(buy_price * (1.0 + _buy_slip), 4)
+                    if not exec_result['filled']:
+                        # 未成交（如当日最低价未触及委托价）：保留候选池，不记为交易
+                        logger.info(f"【未买入】{current_date} {stock_code} "
+                                   f"{stock['stock_name']}: {exec_result['reason']}"
+                                   f"（委托价={exec_result['order_price']:.2f}）")
+                        remaining_candidates.append(candidate)
+                        continue
+                    logger.info(f"股票 {current_date} {stock_code} {stock['stock_name']} "
+                               f"买入成交价: {buy_price:.2f}（委托价="
+                               f"{exec_result['order_price']:.2f}, 方式={exec_result['mode']}）")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     
                     # 获取交易类型（首次建仓或加仓）
                     trade_type = result.trade_type if result else 'new'
                     
+<<<<<<< HEAD
                     # 计算买入数量
                     if trade_type == 'add':
                         # 加仓：优先使用策略返回的数量，否则使用配置的买入金额
@@ -557,6 +1281,50 @@ class BacktestEngine:
                         )
                         kelly_amount = kelly_result['amount']
                         
+=======
+                    # ---- 凯利金额（首次建仓基准；加仓时取 1/2 作为数量下限）----
+                    strategy_name = candidate.get('strategy_name', 'N/A')
+                    total_assets = self._calc_total_assets(current_date, positions, current_capital)
+                    kelly_result = KellyCalculator.calculate_position_amount_with_params(
+                        total_capital=total_assets,
+                        available_cash=current_capital,
+                        strategy_name=strategy_name
+                    )
+                    kelly_amount = kelly_result['amount']
+
+                    # 计算买入数量
+                    if trade_type == 'add':
+                        # 加仓：策略信号数量 与 1/2 凯利金额对应数量 **取大者**
+                        #   —— 策略信号偏小时按"半仓凯利"补足；信号偏大时尊重策略
+                        signal_qty = result.buy_quantity if (result and result.buy_quantity > 0) else 0
+                        if signal_qty <= 0:
+                            config_buy_amount = config.get('buy_amount', 100000)
+                            signal_qty = int(config_buy_amount / buy_price) // 100 * 100
+                        half_kelly_qty = KellyCalculator.calculate_buy_quantity(
+                            position_amount=kelly_amount / 2,
+                            price=buy_price,
+                            stock_code=stock_code
+                        )
+                        quantity = max(signal_qty, half_kelly_qty)
+                        logger.info(f"【加仓数量】{current_date} {stock_code} {stock['stock_name']}: "
+                                    f"策略信号={signal_qty}股, 1/2凯利金额={kelly_amount / 2:.2f}元"
+                                    f"→{half_kelly_qty}股, 取大者={quantity}股")
+
+                        # 数量不足一手时不得下单（2026-09-13）：
+                        # 此前缺该守卫，当"取大者"结果为 0（如高价股 + 金额兜底折算为 0 手）
+                        # 会落库一笔 0 股 / 0 元的加仓订单，并误增 add_count、刷新
+                        # last_add_price，干扰海龟后续加仓节奏
+                        from utils.stock_utils import get_min_trade_unit
+                        _min_unit = get_min_trade_unit(stock_code)
+                        if quantity < _min_unit:
+                            logger.info(f"【未加仓】{current_date} {stock_code} {stock['stock_name']}: "
+                                        f"数量不足{_min_unit}股（策略信号={signal_qty}股，"
+                                        f"半凯利={half_kelly_qty}股），跳过加仓")
+                            remaining_candidates.append(candidate)
+                            continue
+                    else:
+                        # 首次建仓：使用凯利公式计算（获取完整参数）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                         # 确定最终可用金额
                         if current_capital >= kelly_amount:
                             # 可用资金充足，用凯利金额，不预留费用
@@ -595,10 +1363,34 @@ class BacktestEngine:
                         logger.info(f"【未执行买入】{stock_code} {stock['stock_name']}: 可用资金不足2000元（当前{current_capital:.2f}元），跳过执行")
                         remaining_candidates.append(candidate)
                         continue
+<<<<<<< HEAD
                     if buy_amount > current_capital:
                         logger.info(f"【未买入】{stock_code} {stock['stock_name']}: 资金不足（需要{buy_amount:.2f}，可用{current_capital:.2f}）")
                         remaining_candidates.append(candidate)
                         continue
+=======
+
+                    # 含交易费用校验（2026-09-13）：
+                    # 原逻辑仅比较 buy_amount 与可用资金，未给佣金/过户费留位，
+                    # 买入后 current_capital -= (buy_amount + 费用) 会扣出几毛钱负数。
+                    # 现在要求「买入金额 + 佣金 + 过户费 ≤ 可用资金」，不足则按手数回退。
+                    from utils.stock_utils import get_min_trade_unit
+                    _min_unit = get_min_trade_unit(stock_code)
+                    while quantity >= _min_unit:
+                        buy_amount = quantity * buy_price
+                        _cost = calculate_backtest_cost(stock_code, buy_price, quantity, is_buy=True)
+                        _need = buy_amount + _cost['commission'] + _cost['transfer_fee']
+                        if _need <= current_capital:
+                            break
+                        # 通常只差"费用"这一小截：按差额退手（至少退一手）后复验
+                        _deficit = _need - current_capital
+                        quantity -= max(1, int(_deficit / (buy_price * _min_unit)) + 1) * _min_unit
+                    if quantity < _min_unit:
+                        logger.info(f"【未买入】{stock_code} {stock['stock_name']}: 可用资金不足以覆盖含费买入（当前{current_capital:.2f}元，价格{buy_price:.2f}），跳过执行")
+                        remaining_candidates.append(candidate)
+                        continue
+                    buy_amount = quantity * buy_price
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     
                     # 执行买入
                     trade_type = result.trade_type if result else 'new'
@@ -617,10 +1409,25 @@ class BacktestEngine:
                         # 加权平均买入价
                         existing_pos['buy_price'] = existing_pos['buy_amount'] / existing_pos['quantity']
                         # 更新加仓次数和加仓价格
+<<<<<<< HEAD
                         existing_pos['add_count'] = result.add_count if result and hasattr(result, 'add_count') else existing_pos.get('add_count', 0) + 1
                         existing_pos['last_add_price'] = buy_price
                         # 重置持仓日期（加仓代表趋势较好，重新计算持有时间）
                         existing_pos['buy_date'] = current_date
+=======
+                        # add_count 语义：加仓后的累计总次数（1-based），与 position['add_count'] 一致
+                        # 策略**应**设置该字段（如海龟 ✓ / 顺势宝 2026-10-05 起 ✓）；
+                        # 未设置（取 0）时此处回退为自增，避免 hasattr 恒为真
+                        # 导致计数被清零，同时与实盘运行器行为保持一致
+                        result_add_count = getattr(result, 'add_count', 0) if result else 0
+                        existing_pos['add_count'] = (result_add_count if result_add_count > 0
+                                                     else existing_pos.get('add_count', 0) + 1)
+                        existing_pos['last_add_price'] = buy_price
+                        # 加仓不重置建仓日期（统一口径，所有策略一致）
+                        # 说明：历史上此处把 buy_date 重置为当日，导致"持仓过期"被反复续命；
+                        # 现统一保留首次建仓日期，加仓日期记入 last_add_date（仅用于展示/排查）。
+                        existing_pos['last_add_date'] = current_date
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                         logger.info(f"【加仓#{existing_pos['add_count']}】{current_date} {stock_code} {stock['stock_name']}: "
                                    f"原数量={old_quantity}, 加仓={quantity}, 合计={existing_pos['quantity']}, "
                                    f"均价={existing_pos['buy_price']:.2f}, 金额={buy_amount}")
@@ -705,17 +1512,32 @@ class BacktestEngine:
                 dates.append(current_date)
             
             # 4. 结束结算：计算剩余持仓市值（不创建虚拟卖出记录）
+<<<<<<< HEAD
+=======
+            # 使用前一交易日收盘价进行结算，与主循环每日资产计算保持一致
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             if positions:
                 logger.info("计算剩余持仓市值")
                 final_date = date_range[-1]
+                # 使用前一交易日收盘价，与主循环结算逻辑一致（避免未来函数）
+                prev_trading_day = self._get_previous_trading_day(final_date)
+                prev_day_str = prev_trading_day.strftime('%Y-%m-%d') if prev_trading_day else final_date.strftime('%Y-%m-%d')
                 for position in positions:
-                    # 计算当前市值（最后一日收盘价）
-                    current_price = self._get_stock_price(position['stock_code'], final_date, 'close')
+                    # 计算当前市值（使用前一交易日收盘价）
+                    current_price = self._get_stock_price(position['stock_code'], prev_trading_day, 'close')
+                    if current_price is None or current_price <= 0:
+                        current_price = position['buy_price']
                     current_value = current_price * position['quantity']
                     current_capital += current_value
                     logger.info(f"剩余持仓: {position['stock_code']} {position['stock_name']}, "
                                f"买入价={position['buy_price']:.2f}, 当前价={current_price:.2f}, "
                                f"市值={current_value:.2f}")
+<<<<<<< HEAD
+=======
+                # 同步 capital_history 最后一个值为最终结算值，确保资金曲线与 total_return 使用相同基准
+                if capital_history:
+                    capital_history[-1] = current_capital
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             # 5. 计算绩效指标
             final_capital = current_capital
@@ -736,15 +1558,41 @@ class BacktestEngine:
                 'timing_strategy': {
                     'name': self.timing_strategy_name,
                     'params': self.timing_strategy_params
+<<<<<<< HEAD
                 }
             }
+=======
+                },
+                # 【2026-09-25 M1】数据可追溯：闸门状态 + 数据指纹 ✓
+                #   重跑结果不一致时，可直接比对指纹判断"是不是数据变过" ✓
+                'data_gate': {
+                    'strict': (self.data_gate_report or {}).get('strict'),
+                    'ok': (self.data_gate_report or {}).get('ok'),
+                    'trade_days': (self.data_gate_report or {}).get('trade_days'),
+                },
+                'data_fingerprint': json.dumps(self.data_fingerprint or {}, ensure_ascii=False),
+                # ★★【2026-10-03 用户要求 ✓】本次**主要参数设置情况** ✗→✓ ★★
+                #   随结果**一起落库** ✓（`backtest_result.params_snapshot` ✓）⇒
+                #   两次回测数字不同时，**先看这里**就能定位"是哪项参数变了" ✓✓
+                #   （本会话就因缺它，只能靠翻日志 + 手查 yaml 才归因出来 ✗✓）。
+                'param_snapshot': BacktestEngine.build_param_snapshot(
+                    config, tag='普通引擎',
+                    timing_strategy=self.timing_strategy_name,
+                    timing_params=self.timing_strategy_params),
+                }
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             logger.info(f"回测完成，初始资金: {initial_capital}, 最终资金: {final_capital}, 总收益率: {performance['total_return']:.2f}%")
-            
+
+            # 回测成功结束：标记进度完成（result_id 由 routes.py 保存后回填，这里不传）
+            _end_backtest_progress('完成', ok=True)
+
             return backtest_result
-            
+
         except Exception as e:
             logger.error(f"回测失败: {str(e)}")
+            # 回测异常结束：标记进度失败，前端据此停止轮询并显示错误
+            _end_backtest_progress(f'失败: {e}', ok=False)
             raise
         finally:
             # 停止防止系统睡眠
@@ -797,6 +1645,7 @@ class BacktestEngine:
             filtered_by_veto = 0
             filtered_by_score = 0
             
+<<<<<<< HEAD
             # 将预加载的股票添加到可买股票池（格式与正常选股一致，需通过评分过滤）
             for stock in preloaded_stocks:
                 # 评分过滤：与正常选股一致
@@ -806,6 +1655,33 @@ class BacktestEngine:
                     continue
                     
                 if stock.get('score', 0) < score_threshold:
+=======
+            # 将预加载的股票添加到可买股票池（与正常选股同一套入池规则）
+            from trading.pool_entry_rules import (resolve_pool_entry_mode,
+                                                  resolve_pool_entry_simplified)
+
+            _simplified = resolve_pool_entry_simplified(config, self._load_engine_config())
+            # 【2026-09-26】与正常选股**同一套入池规则** ✓（模式 + 阈值都取自同一解析器 ✓）
+            _mode = resolve_pool_entry_mode(config, self._load_engine_config())
+            _veto_only = (_mode == 'veto_only')
+            # ★【2026-09-29 用户要求 ✓】`direct` ⇒ 预加载也**一律放行** ✗→✓
+            #   ⚠️ 必须与正常选股**同步** ✗✓：否则会出现"正常选股直通 ✓、预加载仍按否决剔除 ✗"
+            #      ⇒ **同一模式两种口径** ✗✓（预加载只在回测开始前用一次 ✓，极易漏改 ✗）。
+            _direct = (_mode == 'direct')
+            logger.info("预加载入池规则: " + (
+                "direct（**直通入池** ✓：无评分 ✗、无一票否决 ✗）" if _direct else
+                ("veto_only（**去除评分** ✗，只排除一票否决 ✓）" if _veto_only else
+                 (f"简易评分（先排除一票否决，资金面得分>={score_threshold}）"
+                  if _simplified else f"标准（综合评分>={score_threshold}）"))))
+            for stock in preloaded_stocks:
+                # 评分过滤：与正常选股一致（统一规则：否决票 + 评分达标；`veto_only` 跳过评分 ✗）
+                if not _direct and stock.get('veto_flag', False):
+                    logger.debug(f"预加载股票 {stock['stock_code']} 被否决标志过滤，veto_flag={stock.get('veto_flag')}")
+                    filtered_by_veto += 1
+                    continue
+
+                if not _direct and not _veto_only and stock.get('score', 0) < score_threshold:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     logger.debug(f"预加载股票 {stock['stock_code']} 评分不达标，score={stock.get('score', 0)} < {score_threshold}")
                     filtered_by_score += 1
                     continue
@@ -861,25 +1737,44 @@ class BacktestEngine:
         logger.info("-------------------- 初始股票池预加载结束 --------------------\n")
     
     def _load_trading_calendar(self, start_date: str, end_date: str):
-        """加载交易日历数据（扩大范围，覆盖前一交易日查找需求）
+        """加载交易日历数据（三级策略：Tushare API → 本地缓存 → 报错终止）
+        
+        不再降级到"仅过滤周末"，避免节假日被错误当作交易日处理。
         
         Args:
             start_date: 回测开始日期 (YYYY-MM-DD)
             end_date: 回测结束日期 (YYYY-MM-DD)
+            
+        Raises:
+            RuntimeError: Tushare API 和本地缓存均不可用时抛出
         """
+        from datetime import timedelta
+        from pathlib import Path
+        import json
+        
+        cache_file = Path("data/trading_calendar_cache.json")
+        
+        # 扩大加载范围：往前多加载60天，覆盖_get_previous_trading_day的需求
+        extended_start_dt = datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=60)
+        extended_start = extended_start_dt.strftime('%Y%m%d')
+        end_date_str = end_date.replace('-', '')
+        
+        dates_cache = []  # 最终使用的交易日列表
+        
+        # 1. 尝试从 Tushare 加载交易日历
         try:
             import tushare as ts
             
             # 读取Tushare token
             tushare_token = None
             try:
-                import json
                 with open('config/tushare_config.json', 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    tushare_token = config.get('token') or config.get('api_key')
-            except:
+                    cfg = json.load(f)
+                    tushare_token = cfg.get('token') or cfg.get('api_key')
+            except Exception:
                 pass
             
+<<<<<<< HEAD
             if not tushare_token:
                 logger.warning("未找到Tushare token，使用简单的交易日判断（仅过滤周末）")
                 return
@@ -926,13 +1821,366 @@ class BacktestEngine:
             
             logger.info(f"成功加载交易日历数据，共 {len(self.trading_calendar_cache)} 个交易日")
             
+=======
+            if tushare_token:
+                logger.info(f"从 Tushare 加载交易日历范围: {extended_start} ~ {end_date_str}")
+
+                # 【2026-09-25 新增闸门 ✓】回测取历属**评分侧** ✗ ⇒ 本地优先、**禁止即时联网** ✗
+                #   此前此处**无任何检查** ✗ → 非离线模式跑回测时会静默联网取历 ✗✓
+                from utils.online_guard import PURPOSE_SCORE, guard_online_call
+                guard_online_call('Tushare trade_cal（回测取历）', purpose=PURPOSE_SCORE)
+
+                pro = ts.pro_api(tushare_token)
+                df = pro.trade_cal(
+                    exchange='SSE',
+                    start_date=extended_start,
+                    end_date=end_date_str,
+                    is_open='1'
+                )
+                
+                if df is not None and not df.empty:
+                    # 解析 Tushare 返回的日期列表
+                    new_dates = []
+                    for _, row in df.iterrows():
+                        cal_date = row['cal_date']
+                        new_dates.append(f"{cal_date[:4]}-{cal_date[4:6]}-{cal_date[6:8]}")
+                    new_dates.sort()
+                    
+                    # 合并到本地缓存文件
+                    all_dates = self._load_cache_dates(cache_file)
+                    all_set = set(all_dates)
+                    for d in new_dates:
+                        all_set.add(d)
+                    merged = sorted(all_set)
+                    # 写回缓存文件
+                    self._save_cache_dates(cache_file, merged)
+                    
+                    # 筛选回测所需范围
+                    start_dt = extended_start_dt.date()
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+                    for d_str in merged:
+                        d = datetime.strptime(d_str, '%Y-%m-%d').date()
+                        if start_dt <= d <= end_dt:
+                            dates_cache.append(d_str)
+                    
+                    logger.info(f"Tushare 返回 {len(new_dates)} 日，缓存总计 {len(merged)} 日，"
+                                f"回测范围 {len(dates_cache)} 日")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         except Exception as e:
-            logger.warning(f"加载交易日历数据失败: {str(e)}，使用简单的交易日判断（仅过滤周末）")
-            self.trading_calendar_cache.clear()
-            self._sorted_trading_dates = []
+            logger.warning(f"从 Tushare 加载交易日历失败: {e}")
+        
+        # 2. 如果 Tushare 失败，尝试从本地缓存加载
+        if not dates_cache and cache_file.exists():
+            logger.info(f"Tushare 不可用，从本地缓存加载交易日历: {cache_file}")
+            all_dates = self._load_cache_dates(cache_file)
+            if all_dates:
+                start_dt = extended_start_dt.date()
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+                for d_str in all_dates:
+                    d = datetime.strptime(d_str, '%Y-%m-%d').date()
+                    if start_dt <= d <= end_dt:
+                        dates_cache.append(d_str)
+                logger.info(f"从缓存加载回测范围交易日: {len(dates_cache)} 日 "
+                            f"(缓存总计 {len(all_dates)} 日)")
+
+        # 2.5 【2026-09-13 新增】覆盖不足时用 akshare 兜底（无需 token，节假日准确）
+        #     本地缓存只积累"查询过的日期"，新部署/换机器可能只有几天，
+        #     此前会静默用 1 个交易日跑完整个区间 → 结果完全错误。
+        if self._calendar_coverage_insufficient(dates_cache, extended_start_dt, end_date):
+            before = len(dates_cache)
+            try:
+                # 【2026-09-25 新增闸门 ✓】akshare 日历兜底同属**回测取数** ✗ ⇒ 禁止联网 ✗✓
+                from utils.online_guard import PURPOSE_SCORE, guard_online_call
+                guard_online_call('akshare trade_date_hist（回测取历兜底）',
+                                  purpose=PURPOSE_SCORE)
+                import akshare as ak
+                df = ak.tool_trade_date_hist_sina()
+                raw = [str(x) for x in df['trade_date'].tolist()]
+                ak_dates = sorted({x if '-' in x else f"{x[:4]}-{x[4:6]}-{x[6:8]}"
+                                   for x in raw})
+                _d0 = extended_start_dt.date()
+                _d1 = datetime.strptime(end_date, '%Y-%m-%d').date()
+                dates_cache = [d for d in ak_dates
+                               if _d0 <= datetime.strptime(d, '%Y-%m-%d').date() <= _d1]
+                # 合并写回本地缓存，供后续离线运行使用（全量真实日历，含节假日）
+                merged = sorted(set(self._load_cache_dates(cache_file)) | set(ak_dates))
+                self._save_cache_dates(cache_file, merged)
+                logger.warning(
+                    f"本地缓存覆盖不足（区间仅 {before} 日）→ 已改用 akshare 交易日历"
+                    f"（无需 token）：获取 {len(dates_cache)} 日，缓存已更新至 {len(merged)} 日")
+            except Exception as e:
+                logger.warning(f"本地缓存覆盖不足（{before} 日）且 akshare 兜底失败: {e}")
+
+        # 2.6 【2026-09-25 新增】交易日历**完整性硬校验**（杜绝"静默缺日"✗）
+        #   背景：此前的覆盖判据只有"实际天数 < 工作日×80%" ✗ —— 只能抓"几乎没数据"，
+        #   抓不到**局部空洞**（例如区间中段少 10~20 个交易日 ✗），于是残历照跑、结果静默偏差 ✗。
+        #   现改为：用权威日历（akshare 全量，含节假日）逐日比对 → 缺哪几天一目了然 ✓，
+        #   并**自动补齐**后继续 ✓；补齐失败则由 calendar.strict（默认 true）直接终止 ✗。
+        try:
+            from utils.trade_date_utils import ensure_calendar_coverage
+
+            _cfg = {}
+            try:
+                _cfg = self._load_engine_config() or {}
+            except Exception:
+                _cfg = {}
+            _cal_cfg = _cfg.get('calendar') or {}
+            _strict = _cal_cfg.get('strict', True)
+            _env = os.environ.get('KHUNTER_CALENDAR_STRICT')
+            if _env is not None:
+                _strict = _env.strip() not in ('0', 'false', 'False')
+
+            before = len(dates_cache)
+            healed = ensure_calendar_coverage(start_date, end_date, dates_cache,
+                                              auto_heal=True, strict=bool(_strict))
+            if healed:
+                _d0 = extended_start_dt.date()
+                _d1 = datetime.strptime(end_date, '%Y-%m-%d').date()
+                dates_cache = [d for d in healed
+                               if _d0 <= datetime.strptime(d, '%Y-%m-%d').date() <= _d1]
+            if len(dates_cache) != before:
+                logger.warning(f"交易日历校验后调整: {before} 日 → {len(dates_cache)} 日"
+                               f"（区间 {start_date} ~ {end_date}）")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"交易日历完整性校验异常（继续使用现有日历）: {e}")
+
+        # 3. 如果缓存/兜底都没有，报错终止（不再降级到仅过滤周末）
+        if not dates_cache:
+            raise RuntimeError(
+                f"交易日历加载失败：Tushare API 不可用、本地缓存无覆盖、akshare 兜底也失败。\n"
+                f"预期缓存路径: {cache_file.absolute()}\n"
+                f"请在网络正常时先运行一次回测以生成/补全缓存文件。"
+            )
+        
+        # 通知 trade_date_utils 刷新模块级缓存（Flask 长驻进程场景必需）
+        # 其他模块（moneyflow_scorer 等）通过 trade_date_utils.is_trading_day()
+        # 判断交易日，需要确保模块级缓存与文件缓存同步
+        try:
+            from utils.trade_date_utils import refresh_trading_calendar_cache
+            refresh_trading_calendar_cache()
+            logger.debug("已刷新 trade_date_utils 模块级交易日缓存")
+        except Exception:
+            pass
+        
+        # 构建交易日缓存字典和排序列表
+        self.trading_calendar_cache.clear()
+        for date_str in dates_cache:
+            self.trading_calendar_cache[date_str] = True
+        self._sorted_trading_dates = dates_cache.copy()
+        
+        # 打印前10个和后10个交易日，用于调试
+        if dates_cache:
+            logger.info(f"前10个交易日: {dates_cache[:10]}")
+            logger.info(f"后10个交易日: {dates_cache[-10:]}")
+        
+        logger.info(f"交易日历加载完成，共 {len(self.trading_calendar_cache)} 个交易日")
     
+<<<<<<< HEAD
     def _is_trading_day(self, date: date) -> bool:
         """判断是否为交易日
+=======
+    @staticmethod
+    def _load_cache_dates(cache_file) -> list:
+        """从本地缓存文件读取交易日列表
+        
+        Args:
+            cache_file: Path 对象，缓存文件路径
+            
+        Returns:
+            list: 日期字符串列表 ["YYYY-MM-DD", ...]
+        """
+        import json
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("dates", [])
+        except Exception:
+            return []
+    
+    @staticmethod
+    def _save_cache_dates(cache_file, dates: list):
+        """将交易日列表写入本地缓存文件
+
+        【2026-09-25 加固】原实现为 `open(file,'w')` 直接覆盖 ✗ —— 非原子、无锁、
+        无"拒绝缩水"保护，多进程（Web 服务 / 回测 worker / 数据更新）并发写时会
+        把缓存**覆盖缩水**，且读方可能读到半截 JSON ✗。
+        现统一委托 `utils.trade_date_utils.save_trading_dates`：原子替换 + 只增不减 ✓
+        （保留本方法签名以兼容既有调用点 ✓）
+
+        Args:
+            cache_file: Path 对象，缓存文件路径（仅用于记录，实际路径由工具模块统一管理）
+            dates: 日期字符串列表 ["YYYY-MM-DD", ...]
+        """
+        from utils.trade_date_utils import save_trading_dates
+        save_trading_dates(dates, source='backtest_engine')
+
+    @staticmethod
+    def _calendar_coverage_insufficient(dates: list, start_dt, end_date: str) -> bool:
+        """交易日历覆盖是否明显不足（2026-09-13 新增）
+
+        背景：本地缓存 `data/trading_calendar_cache.json` 只积累"曾经查询过的日期"，
+        新部署/换机器时可能只有几天 —— 此前会**静默**用 1 个交易日跑完整个回测区间，
+        得到完全错误的结果。
+
+        判据：区间内"工作日数"作为上界，实际取得不足其 80% 即视为覆盖不足
+        （扣除春节等长假约 5%~8% 的折损后仍留有安全余量）。
+
+        Args:
+            dates: 当前取得的交易日列表
+            start_dt: 区间起始（date 或 datetime）
+            end_date: 区间结束（YYYY-MM-DD）
+
+        Returns:
+            bool: True = 覆盖不足，需要兜底补齐
+        """
+        from datetime import timedelta
+        try:
+            d0 = start_dt.date() if hasattr(start_dt, 'date') else start_dt
+            d1 = datetime.strptime(end_date, '%Y-%m-%d').date()
+            if d1 < d0:
+                return False
+            expected_weekdays = sum(
+                1 for i in range((d1 - d0).days + 1)
+                if (d0 + timedelta(days=i)).weekday() < 5)
+            if expected_weekdays <= 2:      # 极短区间不做覆盖判定
+                return False
+            return len(dates) < expected_weekdays * 0.8
+        except Exception:
+            return False
+
+    def _run_data_gate(self, start_date: str, end_date: str, date_range,
+                       config: Optional[Dict] = None) -> Optional[Dict]:
+        """回测启动**数据闸门**（2026-09-25 M1 新增 ✓）
+
+        作用：
+          1. 校验四类本地数据在回测区间内的覆盖（日历 / 资金流 / 基本面 / 事件 ✓）
+          2. 缺失 → 打印**缺失清单并终止** ✗（杜绝"残数据跑出像样结果"的静默漂移 ✗）
+          3. 生成**数据指纹**（含 K 线表 ✓）→ 写入回测结果，便于事后归因 ✓
+
+        严格开关优先级：环境变量 `KHUNTER_DATA_STRICT` > 引擎配置 `data.strict` > 默认 `True` ✓
+        跳过项：引擎配置 `data.gate_skip: ['fundamental', 'event']`（M2 迁移期临时用 ✓）
+          ＋ ★【2026-09-29 用户要求 ✓】**不评分（`pool_entry_mode=direct` ✓）⇒ 自动追加
+            `moneyflow` / `fundamental` / `event`** ✗→✓（它们只被评分器消费 ✗ ⇒ 不参与判定 ✓；
+            日历**不跳过** ✗✓，详见函数内注释 ✓）
+          ＋ ★【2026-09-29 用户要求 ✓】**个股 ADX 不参与判定 ⇒ 自动追加 `adx`** ✗→✓
+            （条件 = `enable_stock_adx_filter=false` **且** `enable_index_position_cap=false` ✓，
+            详见函数内注释 ✓）
+
+        ⚠️ 豁免**只影响"校验"** ✗✓ —— 数据指纹（`default_fingerprint_specs` ✓）**照算不误** ✓
+          ⇒ 结果里**仍然**记得这几个表的指纹 ✓ ⇒ 事后照样能归因"数据是否变过" ✓。
+
+        Args:
+            config: **本次请求的回测配置** ✓（可选 ✓）—— 用于判定 `pool_entry_mode=direct` ✓
+                （`None` ⇒ 只看 yaml ✓；两个来源都看 ⇒ 请求里显式指定 direct 也能生效 ✓）
+
+        Returns:
+            闸门报告 dict 或 None（异常时降级为 None + 告警 ✓）
+        """
+        try:
+            from utils.backtest_data_gate import run_gate
+            trade_dates = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)
+                           for d in (date_range or [])]
+            cfg = {}
+            try:
+                cfg = self._load_engine_config() or {}
+            except Exception:
+                cfg = {}
+            data_cfg = cfg.get('data') or {}
+            strict = data_cfg.get('strict', True)
+            env = os.environ.get('KHUNTER_DATA_STRICT')
+            if env is not None:
+                strict = env.strip() not in ('0', 'false', 'False')
+            skip = data_cfg.get('gate_skip') or []
+
+            # ★★【2026-09-29 用户要求 ✓】"**不评分** ⇒ 不必检查 资金 / 基本面 / 公告" ✗→✓ ★★
+            #   用户原话 ✓："当选择不评分时，不需要检查资金、基本面、公告数据" ✓
+            #   判据 ✓：`pool_entry_mode=direct` ✓（= **无评分 ∧ 无一票否决** ✓，见
+            #     `trading/pool_entry_rules.should_skip_scoring` ✓ —— **同一判据** ✓，
+            #     与"是否真的跳过 `_score_stocks`"**必然一致** ✗✓）。
+            #   为什么能豁免 ✓：这三域**只**被评分器消费 ✗（`MoneyflowScorer` ✓ /
+            #     `FundamentalScorer` ✓ / `EventScorer` ✓）⇒ 评分不跑 ⇒ 它们**不参与判定** ✗
+            #     ⇒ 缺了也**不影响结论** ✓（拦着反而是"凭空要数据"✗）。
+            #   ⚠️ **ADX 覆盖 与 交易日历 必须保留** ✗✓：ADX 仍是**个股入场闸门**与
+            #     **大盘仓位上限**的输入 ✓（`direct` **只放开入池** ✓，闸门照旧 ✓）；
+            #     日历是回测骨架 ✓ ⇒ 两者**照旧硬校验** ✓。
+            #   ⚠️ 副作用（**须知** ✓）：这三域**同时移出数据指纹** ✗ ⇒ 本次回测的
+            #     `data_version` 与"评分类"回测**不同** ✓ ⇒ 两者**不应直接比大小** ✓
+            #     （口径本就不同 ✓；要比就同模式比 ✓）。
+            try:
+                from trading.pool_entry_rules import should_skip_scoring
+                if should_skip_scoring(config, cfg):
+                    _add = [d for d in ('moneyflow', 'fundamental', 'event')
+                            if d not in skip]
+                    skip = list(skip) + _add
+                    logger.info('【数据闸门】入池模式 `direct`（**不评分** ✓ ⇒ 无评分、'
+                                '无一票否决 ✓）⇒ **跳过**校验：资金流 / 基本面 / 公告 ✓'
+                                '（它们不参与判定 ✗）；**ADX 覆盖 与 交易日历 照旧校验** ✓')
+            except Exception as e:
+                # 判据异常 ⇒ **宁可不跳过** ✓（多校验一次，绝不放过"该拦的"✗）
+                logger.debug(f'闸门跳过项判定异常（按**不跳过**处理 ✓）: {e}')
+
+            # ★★【2026-09-29 用户要求 ✓】"**ADX 完全不参与判定 ⇒ 也不必检查 ADX**" ✗→✓ ★★
+            #   条件（**充要** ✓，且**保守** ✓）：
+            #     ① `enable_stock_adx_filter=false` ✓ —— 个股 ADX 闸门**内部直接放行** ✓
+            #        （`trading/stock_adx_filter.py::add_entry_gate` 第一句就是
+            #         `if not is_adx_filter_enabled(config): return {passed: True, skipped: True}` ✓）
+            #        ⇒ `stock_kline.adx` **无人消费** ✗ ⇒ 缺了也**不影响结论** ✓；
+            #     ② `enable_index_position_cap=false` ✓ —— **保守**加的一条 ✗✓：
+            #        严格说仓位上限用的是**大盘** ADX（`market_index_adx` ✓，与本项的
+            #        `stock_kline.adx` **不是同一张表** ✗ ⇒ 本不构成依赖 ✗）；
+            #        但"只要还有一个 ADX 族开关开着就**不**放行"更不容易出错 ✓
+            #        （宁可多校验一次 ✓，绝不因省一步而静默改口径 ✗）。
+            #   ⚠️ 覆盖面 ✓：实测个股 ADX 的**唯一**消费者就是 `stock_adx_filter` ✓
+            #     （普通引擎 ✓ / 大盘路由引擎 ✓ / 实盘 ✓ 三个入口都只经它 ✓，且都先判该开关 ✓）。
+            #   ⚠️ **大盘** ADX 另有一项独立校验 ✓（`index_adx` ✓，由 `index_adx_required` 控制 ✓，
+            #     只对挂了 `RegimeRouter` 的引擎硬拦 ✓）⇒ 本处**不碰**它 ✓。
+            try:
+                from trading.index_adx_filter import is_index_position_cap_enabled
+                from trading.stock_adx_filter import is_adx_filter_enabled
+                if ('adx' not in skip
+                        and not is_adx_filter_enabled(config)
+                        and not is_index_position_cap_enabled(config)):
+                    skip = list(skip) + ['adx']
+                    logger.info('【数据闸门】个股 ADX **不参与判定** ✓（`enable_stock_adx_filter=false` '
+                                '且 `enable_index_position_cap=false` ✓）⇒ **跳过** '
+                                '`stock_kline.adx` 覆盖校验 ✓（缺 `adx` 也不影响结论 ✓）')
+            except Exception as e:
+                # 同上 ✓：判据异常 ⇒ **宁可不跳过** ✓
+                logger.debug(f'ADX 跳过项判定异常（按**不跳过**处理 ✓）: {e}')
+            conn = self.db_manager.connect() if getattr(self, 'db_manager', None) else None
+            if conn is None:
+                from utils.global_db import get_global_db
+                conn = get_global_db().connect()
+            # 【2026-09-27 §5.8】若本引擎挂了**大盘路由**（`RegimeBacktestEngine` ✓，
+            #   路由器属性 `_router` ✓）⇒ 大盘 ADX 的**起点覆盖/预热**必须硬拦 ✗
+            #   （状态不可复现 ⇒ 结论无效 ✗）；普通引擎 ⇒ 只提醒 ✓（不误伤 ✗）
+            _idx_required = getattr(self, '_router', None) is not None
+            # ★【2026-10-05 适配 ✓】把"**本次真正会用到的指数**"交给闸门 ✓ ——
+            #   主指数（路由/仓位上限判档用的那个 ✓）+ **板块回退启用时**的板块指数 ✓。
+            #   原实现闸门恒校验 `000985.CSI` ✗ ⇒ 改了指数就"校验的和判档用的不是同一个"✗✓。
+            try:
+                from trading.index_adx_filter import required_index_codes_for_gate
+                _idx_codes = required_index_codes_for_gate(config)
+            except Exception as e:                  # 计算失败 ⇒ 退回旧行为 ✓（闸门自身仍守默认 ✓）
+                logger.debug(f'闸门指数清单解析失败（按默认指数校验 ✓）: {e}')
+                _idx_codes = None
+            report = run_gate(conn, start_date, end_date, trade_dates,
+                              strict=bool(strict), skip=skip,
+                              index_adx_required=_idx_required,
+                              index_codes=_idx_codes)
+            self.data_fingerprint = report.get('fingerprint') or {}
+            return report
+        except RuntimeError:
+            raise                      # 闸门不通过 ⇒ 终止回测 ✗（不吞异常 ✓）
+        except Exception as e:
+            logger.error(f'回测数据闸门执行异常: {e}', exc_info=True)
+            return None
+
+    def _is_trading_day(self, date: date) -> bool:
+        """判断是否为交易日（必须基于交易日历缓存，不使用周末降级）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         Args:
             date: 日期
@@ -942,22 +2190,23 @@ class BacktestEngine:
         """
         date_str = date.strftime('%Y-%m-%d')
         
-        # 如果交易日历缓存已加载，使用缓存判断
-        if self.trading_calendar_cache:
-            # 缓存中只存了交易日，不在缓存中说明不是交易日
-            is_open = date_str in self.trading_calendar_cache
-            logger.debug(f"使用交易日历判断日期 {date_str} 是否为交易日: {is_open}")
-            return is_open
+        # 交易日历缓存未加载时，直接报错
+        if not self.trading_calendar_cache:
+            raise RuntimeError(
+                f"交易日历缓存未加载，无法判断 {date_str} 是否为交易日。"
+                f"请确保 _load_trading_calendar() 已成功执行。"
+            )
         
-        # 如果没有交易日历数据，使用简单的判断（仅过滤周末）
-        is_open = date.weekday() < 5
-        logger.debug(f"使用简单判断日期 {date_str} 是否为交易日: {is_open}")
+        # 缓存中只存了交易日，不在缓存中说明不是交易日
+        is_open = date_str in self.trading_calendar_cache
+        logger.debug(f"使用交易日历判断日期 {date_str} 是否为交易日: {is_open}")
         return is_open
     
     def _get_trading_dates(self, start_date: str, end_date: str) -> List[date]:
         """获取回测期间的交易日列表
         
-        直接从已加载的交易日历缓存中筛选，确保只处理真实交易日。
+        直接从前一步加载的交易日历缓存中筛选，确保只处理真实交易日。
+        不再降级到仅过滤周末的模式。
         
         Args:
             start_date: 开始日期
@@ -965,11 +2214,15 @@ class BacktestEngine:
             
         Returns:
             交易日期列表
+            
+        Raises:
+            RuntimeError: 交易日历缓存未加载
         """
         # 转换为日期对象
         start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
         end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
         
+<<<<<<< HEAD
         # 如果有排序好的交易日列表，直接筛选
         if hasattr(self, '_sorted_trading_dates') and self._sorted_trading_dates:
             dates = []
@@ -985,11 +2238,33 @@ class BacktestEngine:
                 if self._is_trading_day(current):
                     dates.append(current)
                 current += timedelta(days=1)
+=======
+        # 必须从已排序的交易日列表中筛选
+        if not (hasattr(self, '_sorted_trading_dates') and self._sorted_trading_dates):
+            raise RuntimeError(
+                "交易日历缓存未加载，无法获取回测交易日列表。"
+                "请确保 _load_trading_calendar() 已成功执行。"
+            )
+        
+        # 从已排序的交易日列表中筛选
+        dates = []
+        for d_str in self._sorted_trading_dates:
+            d = datetime.strptime(d_str, '%Y-%m-%d').date()
+            if start_dt <= d <= end_dt:
+                dates.append(d)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 打印回测交易日列表
+        # 【2026-09-28 减噪 ✗→✓】原下面还有 `for d in dates: logger.debug(f"  交易日: {d}")` ✗
+        #   —— 实测单日 **32,112 行** ✗（占全天 11% ✗）：本函数被**每只股票**调用 ✗
+        #   ⇒ 同一交易日被重复打印 350~410 次 ✗✓。上面那行**汇总 INFO 已足够** ✓
+        #   （区间 + 总天数 ✓）⇒ 逐日明细**整段删除** ✓。
         logger.info(f"回测交易日: {start_date} 至 {end_date}，共 {len(dates)} 个交易日")
+<<<<<<< HEAD
         for d in dates:
             logger.debug(f"  交易日: {d.strftime('%Y-%m-%d')}")
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         return dates
     
@@ -1120,7 +2395,23 @@ class BacktestEngine:
             str: 支撑位计算方法（ma20/key_close_5/key_open/key_close）
         """
         # 从配置中查找策略对应的支撑位方法
+<<<<<<< HEAD
         strategy_config = self._support_methods_config.get(strategy_name, {})
+=======
+        strategy_config = self._support_methods_config.get(strategy_name)
+        # 中英文策略名兼容查找（调用方可能传入中文名，yaml 键为英文名）
+        if strategy_config is None:
+            try:
+                from utils.strategy_name_mapper import get_english_name, get_chinese_name
+                en = get_english_name(strategy_name)
+                zh = get_chinese_name(strategy_name)
+                strategy_config = self._support_methods_config.get(en) or self._support_methods_config.get(zh)
+            except Exception:
+                pass
+        # 未找到配置，回退默认
+        if strategy_config is None:
+            strategy_config = {}
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 配置为字典格式，提取support_method字段
         if isinstance(strategy_config, dict):
             return strategy_config.get('support_method', 'ma20')
@@ -1153,7 +2444,11 @@ class BacktestEngine:
         # 获取策略对应的支撑位计算方法
         # 如果 strategy_name 已经是支撑位方法名称（ma20/key_close_5/key_open/key_close），直接使用
         # 如果 strategy_name 为 None，使用默认方法 ma20
+<<<<<<< HEAD
         valid_support_methods = ['ma20', 'key_close_5', 'key_open', 'key_close']
+=======
+        valid_support_methods = ['ma20', 'key_close_5', 'key_open', 'key_close', 't_day_low']
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         if strategy_name is None:
             support_method = 'ma20'
         elif strategy_name in valid_support_methods:
@@ -1189,6 +2484,17 @@ class BacktestEngine:
                 ma20_value = round(df_to_date['close'].tail(20).mean(), 2)
                 logger.debug(f"支撑位计算: {stock_code} ma20={ma20_value}")
                 return ma20_value
+<<<<<<< HEAD
+=======
+
+        elif support_method == 't_day_low':
+            # t_day_low: T日（选股日/selection_date 当日）最低价作为支撑位
+            # 取 df_to_date 最后一行（已按日期升序排列）的最低价
+            if len(df_to_date) >= 1:
+                t_low = float(df_to_date['low'].iloc[-1])
+                logger.debug(f"支撑位计算: {stock_code} t_day_low={t_low:.2f} (T日={date_str})")
+                return round(t_low, 2)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
         elif support_method in ['key_close_5', 'key_open', 'key_close']:
             # 需要关键日的方法：从信号中提取key_date
@@ -1241,6 +2547,36 @@ class BacktestEngine:
 
     # YAML配置文件缓存
     _pool_removal_config_cache = None
+<<<<<<< HEAD
+=======
+    _engine_config_cache = None
+
+    def _load_engine_config(self) -> Dict:
+        """加载回测引擎行为配置
+        
+        配置文件路径: config/backtest_engine_config.yaml
+        
+        Returns:
+            引擎配置字典
+        """
+        # 使用类级别缓存，避免重复读取文件
+        if BacktestEngine._engine_config_cache is not None:
+            return BacktestEngine._engine_config_cache
+        
+        config_path = Path(__file__).parent.parent / "config" / "backtest_engine_config.yaml"
+        
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                yaml_config = yaml.safe_load(f) or {}
+            BacktestEngine._engine_config_cache = yaml_config
+            logger.info(f"加载回测引擎配置: reverse_pool_order={yaml_config.get('reverse_pool_order', 0)}")
+            return yaml_config
+        else:
+            logger.warning(f"回测引擎配置文件不存在: {config_path}，使用默认配置")
+            default_config = {'reverse_pool_order': 0}
+            BacktestEngine._engine_config_cache = default_config
+            return default_config
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
     def _load_pool_removal_config(self) -> Dict[str, Dict]:
         """从YAML配置文件加载股票池移除策略配置
@@ -1269,9 +2605,17 @@ class BacktestEngine:
         
         # 保存资金流向规则配置（类级别缓存）
         self._fund_flow_rules = yaml_config.get('fund_flow_rules', {})
+<<<<<<< HEAD
         logger.info(f"加载资金流向移除规则: enabled={self._fund_flow_rules.get('is_enabled', False)}, "
                    f"threshold={self._fund_flow_rules.get('net_flow_threshold', -10000)}万元, "
                    f"min_hold_days={self._fund_flow_rules.get('min_hold_days', 5)}")
+=======
+        # 【2026-09-28 减噪 ✗→✓】配置装载属细节 ⇒ 降 `debug` ✓
+        #   （原文案还挂着"`net_flow_threshold` 已废弃"✗ —— 废旧信息不必每轮更新都播报 ✗）
+        logger.debug(f"加载资金流向移除规则: enabled={self._fund_flow_rules.get('is_enabled', False)}, "
+                     f"min_hold_days={self._fund_flow_rules.get('min_hold_days', 1)}"
+                     f"（判定条件与资金面一票否决一致，net_flow_threshold 已废弃）")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         strategies = yaml_config.get('removal_strategies', {})
         for name, cfg in strategies.items():
@@ -1293,7 +2637,12 @@ class BacktestEngine:
         
         BacktestEngine._pool_removal_config_cache = config_map
         enabled_count = len([name for name, cfg in strategies.items() if cfg.get('is_enabled', True)])
+<<<<<<< HEAD
         logger.info(f"从YAML配置加载股票池移除策略: {enabled_count} 个策略")
+=======
+        # 【2026-09-28 减噪 ✗→✓】配置装载属细节 ⇒ 降 `debug` ✓（回测逐日会重复打 ✗）
+        logger.debug(f"从YAML配置加载股票池移除策略: {enabled_count} 个策略")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         return config_map
 
@@ -1332,28 +2681,96 @@ class BacktestEngine:
         
         raise KeyError(f"策略 {strategy_name} 未配置股票池移除参数，请在 config/pool_removal_config.yaml 中添加")
 
+<<<<<<< HEAD
     def _check_pool_removal(self, current_date, config):
         """检查股票池中需要移除的股票
         
+=======
+    @staticmethod
+    def describe_hold_days(hold_days: int) -> str:
+        """把持有天数打成**交易日口径**的一行 ✓ —— `持2交易日` ✓
+
+        ★【2026-09-28 用户要求 ✓】**统一改为交易日** ✗→✓
+
+        背景 ✗✓（用户疑问 ✓）：日志写"持5日"✗ 但用户只加入池 **1 天** ✗ ——
+        根因是旧实现用 `(prev_date − added_date).days` ✓ = **日历天** ✗
+        （`2025-12-31` 入池 ✓、`2026-01-05` 检查 ⇒ 跨**元旦 + 周末** ⇒ **5** ✗✓），
+        而**前端股票池页面**（`web_server.py` 的 `days_in_pool` ✓）
+        与**回测持股清单**（`backtest_engine` 每日资产 ✓ `len(_get_trading_dates) - 1` ✓）
+        都已是**交易日** ✓ ⇒ 只有"池移除"这一处不一致 ✗。
+
+        ⇒ 现**统一为交易日** ✓（判定与日志同口径 ✓）：
+          `hold_days` = `count_trading_days_between(added_date, prev_date, …)` ✓
+          —— **入池当日 = 0** ✓（上例 ⇒ **1** ✓）。
+
+        ⚠️ **口径变更会改变回测结果** ✗✓：`min_hold_days` 语义随之变为**交易日** ✓
+        （如 `2` = 入池后第 2 个交易日 ✓）⇒ 趋势/资金流移除**触发更早** ✓。
+
+        取不到天数 ⇒ `0` ✓（**不编数** ✗）。
+        """
+        return f'持{hold_days}交易日'
+
+    def _check_pool_removal(self, current_date, config, held_codes=None):
+        """检查股票池中需要移除的股票
+        
+        前置规则（优先于下列条件）：
+        0. 持仓股不移除（2026-09-11）：处于持仓中的候选一律保留，不参与移除判断
+           （避免"移除后又加回"的抖动，并保证加仓链路可用；回测与实盘同口径）
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         移除条件（满足任一即移除）：
         1. 破支撑位：前一日收盘价 < 支撑位 × 0.98（始终生效）
         2. 不满足上升趋势条件（加入股票池 min_hold_days 天后生效）
         3. 资金流向条件（同时满足以下两个条件时移除）：
+<<<<<<< HEAD
             - 5日主力资金累计净流入 < -10000万元
             - 大单净流出 且 小单净流入（出货信号）
+=======
+           - 5日主力资金累计净流入 < -10000万元
+           - 大单净流出 且 小单净流入（出货信号）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         趋势验证条件：
         - 收盘价 >= MA10
         - 20日线性回归斜率 > 0
         - 20日R²拟合度 >= 0.3
         
+<<<<<<< HEAD
         Args:
             current_date: 当前交易日期
             config: 回测配置
+=======
+        股票池模式（pool_mode，由 config 控制）：
+        - persistent（默认）：维持现状，仅按上述条件移除，池跨交易日累积
+        - rotation（轮动）：在条件移除之前，先把池中“非持仓”候选全部轮出，
+          仅保留当前已持仓候选。即每日可买池 = 已持仓 + 当日新选，
+          历史老候选每日被轮出。
+        ⚠️ 由前置规则 0（持仓保留）与轮动规则（非持仓轮出）共同决定：
+           rotation 模式下条件 1~3 实际不会命中任何候选（条件移除只对 persistent 生效）。
+        
+        Args:
+            current_date: 当前交易日期
+            config: 回测配置（含 pool_mode）
+            held_codes: 当前持仓股票代码集合，轮动模式下用于移除非持仓候选
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
         Returns:
             list: 移除的候选列表
         """
+<<<<<<< HEAD
+=======
+        # 股票池移除模式：config 传入优先，其次实例属性（已由 run_backtest 融合配置文件），最后默认 persistent
+        pool_mode = config.get('pool_mode') or getattr(self, 'pool_mode', 'persistent')
+        if pool_mode not in ('persistent', 'rotation'):
+            logger.warning(f"未知 pool_mode={pool_mode}，回退为 persistent")
+            pool_mode = 'persistent'
+        # 当前持仓代码集合（轮动模式用于移除非持仓候选）；缺省为空集
+        if held_codes is None:
+            held_codes = set()
+        else:
+            held_codes = set(held_codes)
+        
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         removed_candidates = []
         remaining_candidates = []
         
@@ -1363,27 +2780,71 @@ class BacktestEngine:
         
         # 获取资金流向规则配置
         fund_flow_enabled = getattr(self, '_fund_flow_rules', {}).get('is_enabled', True)
+<<<<<<< HEAD
         fund_flow_threshold = getattr(self, '_fund_flow_rules', {}).get('net_flow_threshold', -10000)
         fund_flow_min_hold_days = getattr(self, '_fund_flow_rules', {}).get('min_hold_days', 5)
+=======
+        fund_flow_min_hold_days = getattr(self, '_fund_flow_rules', {}).get('min_hold_days', 1)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         for candidate in self.buy_candidate_pool:
             # 提取股票信息
             stock_code = candidate['stock']['stock_code']
             stock_name = candidate['stock']['stock_name']
             strategy_name = candidate.get('strategy_name', '')
+<<<<<<< HEAD
+=======
+
+            # ===== 持仓股不移除（2026-09-11）=====
+            # 处于持仓中的候选一律保留（persistent / rotation 均适用），
+            # 既避免"移除后又加回"的抖动，也保证加仓链路可用。
+            if stock_code in held_codes:
+                remaining_candidates.append(candidate)
+                logger.info(f"【保留】{current_date} {stock_code} {stock_name}: "
+                            f"当前持仓中，不参与移除判断")
+                continue
+
+            # 轮动模式：非持仓候选直接轮出，不参与条件判断（持仓候选已在上方保留）
+            if pool_mode == 'rotation' and stock_code not in held_codes:
+                removed_candidates.append(candidate)
+                logger.info(f"【轮出】{current_date} {stock_code} {stock_name}: "
+                           f"轮动模式移除非持仓候选（当前持仓 {len(held_codes)} 只）")
+                continue
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             # 获取策略的移除配置
             removal_config = self._get_strategy_removal_config(strategy_name)
             min_hold_days = removal_config.get('min_hold_days', 2)
             
+<<<<<<< HEAD
             # 计算持有天数
+=======
+            # 计算持有天数（★ **交易日** ✓ —— 2026-09-28 用户要求"**统一改为交易日**"✗→✓；
+            #   旧实现是**日历天** ✗ ⇒ 跨周末/节假日虚高 ✗ —— 实测 `2025-12-31` 入池、
+            #   `2026-01-05` 检查 ⇒ 旧 **5** ✗（元旦 + 周末）vs 新 **1** ✓。
+            #   用引擎已加载的 `_sorted_trading_dates` ✓ ⇒ **零联网** ✓、与前端同口径 ✓）
+            from utils.trade_date_utils import count_trading_days_between
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             added_date = candidate.get('added_date')
             if isinstance(added_date, str):
                 added_date = datetime.strptime(added_date, '%Y-%m-%d').date()
             elif not isinstance(added_date, date):
+<<<<<<< HEAD
                 added_date = date.today()
             
             hold_days = (prev_date - added_date).days
+=======
+                # ★【2026-09-28 修复 ✗→✓】原兜底是 `date.today()` ✗ ⇒
+                #   `prev_date − 今天` = **负数** ✗ ⇒ 条件2/3（趋势 / 资金流）**静默永不触发** ✗。
+                #   现按"**刚入池**"✓（= 0 交易日 ✓）处理并**告警** ✓
+                #   （⚠️ 与旧的"负数"一样都 `< min_hold_days` ✓ ⇒ 仍不触发 ✓，只是不再静默 ✗）。
+                logger.warning(f'【池移除】{current_date} {stock_code} '
+                               f'缺少 added_date ✗ ⇒ 持有天数按 0 交易日计 ✓（不误移除 ✓）')
+                added_date = prev_date
+
+            hold_days = count_trading_days_between(
+                added_date, prev_date, getattr(self, '_sorted_trading_dates', None))
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             # 获取股票数据
             df = self.stock_filtered_cache.get(stock_code)
@@ -1438,9 +2899,15 @@ class BacktestEngine:
                     if r_squared < 0.3:
                         removal_reasons.append(f"R²{r_squared:.4f}<0.3")
             
+<<<<<<< HEAD
             # 条件3: 资金流向移除（同时满足两个条件时移除）
             # - 5日主力资金累计净流入 < 阈值（默认-10000万元）
             # - 大单净流出 且 小单净流入（出货信号）
+=======
+            # 条件3: 资金流向移除（判定条件与「资金面一票否决」一致，两条件为 OR）
+            # - 5日主力净额 < -1亿 且 大单净流入占比 < -5%（无占比字段→净额/成交额 < -1%）
+            # - 出货信号：大单净流出占比 > 1% 且 小单净流入占比 > 1%
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             if fund_flow_enabled and hold_days >= fund_flow_min_hold_days:
                 fund_flow_result = self._check_fund_flow_condition(stock_code, current_date)
                 if fund_flow_result['should_remove']:
@@ -1451,7 +2918,12 @@ class BacktestEngine:
             if should_remove:
                 removed_candidates.append(candidate)
                 logger.info(f"【移除】{current_date} {stock_code} {stock_name}: "
+<<<<<<< HEAD
                            f"收盘={prev_close:.2f}, 策略={strategy_name}, 持{hold_days}日, "
+=======
+                           f"收盘={prev_close:.2f}, 策略={strategy_name}, "
+                           f"{self.describe_hold_days(hold_days)}, "
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                            f"原因: {'; '.join(removal_reasons)}")
             else:
                 remaining_candidates.append(candidate)
@@ -1467,8 +2939,16 @@ class BacktestEngine:
     def _check_fund_flow_condition(self, stock_code: str, current_date: str) -> Dict:
         """检查资金流向移除条件
         
+<<<<<<< HEAD
         规则：
         - 如果5日主力净额 < -10000万元 或者 大单净流出小单净流入：
+=======
+        判定条件（与「资金面一票否决」完全一致，直接复用 MoneyflowScorer.check_veto）：
+        - 条件1  5日主力净额 < -1亿 且 大单净流入占比 < -5%
+                 （无占比字段时回退：净额/成交额 < -1%）
+        - 条件2  出货信号：大单净流出占比 > 1% 且 小单净流入占比 > 1%
+        - 两条件为 **OR**：任一满足即触发处理：
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
           - 如果股票不在冷却池 → 加入冷却池3天，不移除
           - 如果股票已经在冷却池 → 直接移除
         
@@ -1514,6 +2994,7 @@ class BacktestEngine:
                 # 如果是字符串，移除横杠
                 date_str = str(current_date).replace('-', '')
             
+<<<<<<< HEAD
             # 使用资金评分器获取资金流向数据
             scorer = MoneyflowScorer()
             df = scorer._fetch_moneyflow_data(stock_code, date_str)
@@ -1543,6 +3024,50 @@ class BacktestEngine:
                 else:
                     reason_detail = "大单净流出且小单净流入（出货信号）"
                 
+=======
+            # 使用资金评分器获取资金流向数据（M1 起为**本地读取** ✓，缺数据会抛错 ✗）
+            scorer = MoneyflowScorer()
+            try:
+                df = scorer._fetch_moneyflow_data(stock_code, date_str)
+            except RuntimeError as e:
+                _msg = str(e)
+                # ★【2026-09-28】**已登记的个股级上游缺口** ✓ ⇒ 降为 INFO ✓、
+                #   **不计入**"数据缺失"计数 ✗（它是**源端永久缺口** ✗ —— 实测 92 只 ×
+                #   `2025-03-15 ~ 2026-03-09` ✓，源端逐只探测 **0 行** ✗ ⇒ 补采也补不上 ✓）
+                if '[已知上游源缺口]' in _msg:
+                    logger.info(f'【资金流向·已知上游缺口】{stock_code} @ {date_str} ✓ '
+                                f'→ 跳过资金流向移除判定 ✓（登记见 config/data_source_gaps.yaml ✓）')
+                    return {'should_remove': False,
+                            'reason': '资金流向属**已知上游源侧缺口**（跳过否决 ✓）',
+                            'data_missing': True, 'known_source_gap': True}
+                # 本地数据缺失 ⇒ **显著告警 + 计数**（原实现会静默"不移除" ✗，掩盖问题）
+                self._fund_flow_data_gaps = getattr(self, '_fund_flow_data_gaps', 0) + 1
+                logger.warning(f'【资金流向数据缺失】{stock_code} @ {date_str}: {_msg[:200]} '
+                               f'→ 本日不参与资金流向移除判定（累计 {self._fund_flow_data_gaps} 次）')
+                return {'should_remove': False,
+                        'reason': '资金流向数据缺失（已告警，不计入否决）', 'data_missing': True}
+
+            if df is None or df.empty:
+                # 【2026-09-25 M1】原实现直接 `should_remove=False` 静默放行 ✗ —— 数据缺失被掩盖 ✗
+                #   现改为**告警 + 计数**，并在结果中标记 `data_missing` ✓
+                #   （不抛错：个别新股/无资金流标的不应让整轮回测失败 ✗；
+                #     整体性缺失由启动数据闸门统一拦截 ✗✓）
+                self._fund_flow_data_gaps = getattr(self, '_fund_flow_data_gaps', 0) + 1
+                logger.warning(f'【资金流向数据缺失】{stock_code} @ {date_str}：本地窗口为空 ✗ '
+                               f'→ 本日不参与资金流向移除判定'
+                               f'（累计 {self._fund_flow_data_gaps} 次，请检查数据更新 ✓）')
+                return {'should_remove': False,
+                        'reason': '资金流向数据缺失（已告警，不计入否决）', 'data_missing': True}
+            
+            # 提取指标后交由「资金面一票否决」同一套条件判定
+            #   条件1  5日主力净额 < -1亿 且 大单净流入占比 < -5%（无占比字段→净额/成交额 < -1%）
+            #   条件2  出货信号：大单净流出占比 > 1% 且 小单净流入占比 > 1%
+            #   两条件为 OR 关系
+            metrics = scorer._extract_flow_metrics(df)
+            is_veto, reason_detail = scorer.check_veto(stock_code, date_str, metrics)
+
+            if is_veto:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 # 统一获取current_date_obj
                 if hasattr(current_date, 'strftime'):
                     current_date_obj = current_date
@@ -1590,10 +3115,16 @@ class BacktestEngine:
         # 根据策略参数计算需要的历史数据天数
         buffer_days = 60  # 基础缓冲
         required_days = buffer_days
+        # 【2026-09-19】需全历史的策略：只对"需要的股票"取全历史（None = 全市场）
+        full_history_codes = None
         
         if strategy_name:
-            # 获取策略参数
-            strategy = self.strategy_registry.get_strategy(strategy_name)
+            # 获取策略参数 - 需中英文名称映射（与 _execute_selection 保持一致）
+            from utils.strategy_name_mapper import get_english_name
+            mapped_name = get_english_name(strategy_name)
+            strategy = self.strategy_registry.get_strategy(mapped_name)
+            if not strategy:
+                strategy = self.strategy_registry.get_strategy(strategy_name)
             if strategy and hasattr(strategy, 'params'):
                 params = strategy.params
                 max_value = 0
@@ -1601,6 +3132,7 @@ class BacktestEngine:
                 # 常见回溯参数名 - 包含所有策略的历史数据需求参数
                 lookback_keys = [
                     'lookback_days',                # 多金叉共振、多方炮、阻力位突破、启明星、底部趋势拐点
+                    'high_drawdown_days',           # 超跌反弹：收盘价 vs 近 N 日最高价的回撤窗口
                     'pattern_days',                 # W底策略
                     'search_days',                  # 预留
                     'resonance_days',               # 预留
@@ -1608,10 +3140,14 @@ class BacktestEngine:
                     'lowest_point_lookback_days',   # 趋势加速拐点
                     'surge_lookback_days',          # 趋势加速拐点
                     'uptrend_lookback_days',        # 趋势加速拐点
+                    'min_data_len',                 # 低位九转等：最少历史交易日（强约束，必须纳入预加载窗口）
+                    'low_drawdown_window',          # 低位九转：距阶段高点回撤回溯窗口
+                    'setup_window',                 # 低位九转：买入 Setup 连续根数（用于前置结构回溯）
                 ]
                 period_keys = ['ma_period', 'ma_short_period', 'ma_long_period', 'kdj_n', 'kdj_m1', 'kdj_m2',
                               'macd_short', 'macd_long', 'macd_signal', 'volume_ma_period', 'short_ma_period', 
-                              'long_ma_period', 'period', 'min_pattern_days', 'max_break_days']
+                              'long_ma_period', 'period', 'min_pattern_days', 'max_break_days',
+                              'short_period', 'mid_period', 'long_period', 'super_long_period']
                 
                 # 获取回溯天数
                 for key in lookback_keys:
@@ -1629,16 +3165,65 @@ class BacktestEngine:
                 
                 required_days = max_value + buffer_days
                 logger.info(f"策略 {strategy_name} 需要 {max_value} 天历史数据 + {buffer_days} 天缓冲")
+
+                # 【2026-09-19】策略级特殊处理：需要"上市以来全历史"的策略（如次新腰斩）
+                #   不能按参数天数截断窗口，否则「上市以来最高价」等全局指标失真。
+                #   钩子：策略类属性 requires_full_history = True
+                if getattr(strategy, 'requires_full_history', False):
+                    required_days = 36500       # 100 年 ⇒ 等价于不截断（取全历史）
+                    # 只对"需要的股票"取全历史：按策略钩子以**回测起始日**为界，
+                    # 求出"该日之前 K 线根数少的次新 + 该日之后才上市的新股"（无未来函数）。
+                    # 根数只增不减 → 该日已超阈值的股票后续不可能成为次新，可安全排除。
+                    if hasattr(strategy, 'full_history_universe'):
+                        full_history_codes = strategy.full_history_universe(
+                            self.db_manager, start_date, params)
+                    logger.info(f"策略 {strategy_name} 声明 requires_full_history=True，"
+                                f"预加载改为全历史（仅限 %s 只需要的股票）",
+                                len(full_history_codes) if full_history_codes else '全部')
         
-        # 扩展开始日期
-        extended_start = (start_dt - timedelta(days=required_days)).strftime('%Y-%m-%d')
-        
-        logger.info(f"预加载股票数据: {extended_start} ~ {end_date} (原始: {start_date} ~ {end_date}, 加载历史: {required_days}天)")
-        
-        # 获取所有股票代码
-        stock_codes = self.db_manager.list_all_stocks()
-        total = len(stock_codes)
+        # SQL 查询起始日期：仅加载回测所需数据（start_date - required_days）
+        # required_days 由策略参数 + buffer_days 计算得出，精确反映策略需要的历史数据量
+        sql_start_dt = start_dt - timedelta(days=required_days)
+        sql_start = sql_start_dt.strftime('%Y-%m-%d')
+        if required_days >= 36500:
+            # 需全历史的策略（requires_full_history）→ 从库内最早数据起取
+            sql_start = '1990-01-01'
+
+        logger.info(f"预加载股票数据: {sql_start} ~ {end_date} (需要历史: {required_days}天)")
+
+        import pandas as pd
+
+        # 第1步：一次SQL批量加载全市场K线（全部股票，不过滤ST/退市/数据量）
+        step1_start = datetime.now()
+        all_kline_df = self.db_manager.read_all_stocks_kline(
+            sql_start, end_date, codes=full_history_codes)
+        step1_time = (datetime.now() - step1_start).total_seconds()
+
+        if all_kline_df.empty:
+            logger.warning("批量K线数据为空，跳过预加载")
+            return 0
+
+        # 统一日期格式为字符串（SQL返回已是YYYY-MM-DD字符串，确保格式一致）
+        if not pd.api.types.is_string_dtype(all_kline_df['date']):
+            all_kline_df['date'] = pd.to_datetime(all_kline_df['date']).dt.strftime('%Y-%m-%d')
+        # 按code和date正序排列
+        all_kline_df = all_kline_df.sort_values(['code', 'date'])
+
+        total_codes = all_kline_df['code'].nunique()
+        logger.info(f"[预加载-第1步] 批量K线: {len(all_kline_df)} 行, {total_codes} 只股票, 耗时 {step1_time:.1f}s")
+
+        # 第2步：批量获取股票名称
+        step2_start = datetime.now()
+        all_stock_names = self.db_manager.get_all_stock_names()
+        self.stock_name_cache.update(all_stock_names)
+        step2_time = (datetime.now() - step2_start).total_seconds()
+        logger.info(f"[预加载-第2步] 批量名称: {len(all_stock_names)} 只, 耗时 {step2_time:.1f}s")
+
+        # 第3步：按code分组构建缓存（全部加载，不做任何过滤）
+        # 数据不足、ST、退市等过滤统一在选股时处理
+        step3_start = datetime.now()
         loaded = 0
+<<<<<<< HEAD
         skipped = 0
         
         for i, code in enumerate(stock_codes):
@@ -1682,11 +3267,28 @@ class BacktestEngine:
                 logger.debug(f"预加载股票 {code} 失败: {str(e)}")
                 skipped += 1
             
+=======
+        processed = 0
+
+        grouped = all_kline_df.groupby('code')
+        for code, group_df in grouped:
+            # 缓存原始数据（含退市、ST，用于价格查询和移动止损计算）
+            self.stock_data_cache[code] = group_df.copy()
+            # 缓存有效股票（全部入池，选股时再做数据量/ST/退市过滤）
+            self.stock_filtered_cache[code] = group_df.copy()
+            loaded += 1
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             # 每500只显示一次进度
-            if (i + 1) % 500 == 0:
-                logger.info(f"预加载进度: {i + 1}/{total}, 有效股票: {loaded}, 跳过: {skipped}")
-        
-        logger.info(f"预加载完成: 有效股票 {loaded}, 跳过 {skipped}, 总计 {total}")
+            processed += 1
+            if processed % 500 == 0:
+                logger.info(f"预加载进度: {processed}/{total_codes}, 已加载: {loaded}")
+
+        step3_time = (datetime.now() - step3_start).total_seconds()
+
+        total_time = step1_time + step2_time + step3_time
+        logger.info(f"预加载完成: 全部加载 {loaded} 只股票, 总耗时 {total_time:.1f}s "
+                    f"(步骤: SQL={step1_time:.1f}s 名称={step2_time:.1f}s 分组={step3_time:.1f}s)")
         return loaded
     
     def _execute_selection(self, strategy_name: str, date: date) -> List[Dict]:
@@ -1719,25 +3321,38 @@ class BacktestEngine:
             # 标准化返回格式
             standardized_stocks = []
             
-            # 从缓存遍历有效股票
+            # 从缓存遍历全部股票，选股时做过滤
             for code, df in self.stock_filtered_cache.items():
                 try:
+                    # 股票名称：供策略的 _validate_stock_name 校验（ST/退市/未知等）
+                    # 必须在此赋值：下方 execute_selection 依赖该变量。历史上一度在
+                    # "移除 ST 过滤"时被连带删除，导致 NameError 并被 except 静默吞掉，
+                    # 表现为全市场选股恒为 0 只，此处补回并注明用途防止再次误删。
+                    # 默认值用空串而非"未知"：策略层将"未知"判为无效名称会误杀股票。
+                    name = self.stock_name_cache.get(code, '')
+
                     # 日期切片：只取到目标日期为止的数据
                     date_str = date.strftime('%Y-%m-%d')
                     df_to_date = df[df['date'] <= date_str].copy()
                     
-                    # 检查数据是否为空（预加载时已检查过至少60条，这里只检查是否有数据）
+                    # 过滤1：数据为空 → 跳过
                     if df_to_date.empty:
                         continue
                     
+<<<<<<< HEAD
                     # 反转数据为倒序（最新的在前），供策略使用
                     # 注意：read_stock默认返回倒序数据，截断后仍为倒序，无需反转
                     # 仅当数据为升序时才反转
                     if len(df_to_date) > 1 and df_to_date['date'].iloc[0] < df_to_date['date'].iloc[-1]:
                         df_to_date = df_to_date.iloc[::-1].reset_index(drop=True)
+=======
+                    # 注意：不过滤 ST/退市股票（历史回测无法准确还原当时状态，交给策略自身的 quick_filter 处理）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     
-                    # 获取股票名称
-                    name = self.stock_name_cache.get(code, "未知")
+                    # 反转数据为倒序（最新的在前），供策略使用
+                    # 仅当数据为升序时才反转
+                    if len(df_to_date) > 1 and df_to_date['date'].iloc[0] < df_to_date['date'].iloc[-1]:
+                        df_to_date = df_to_date.iloc[::-1].reset_index(drop=True)
                     
                     # 使用标准的 execute_selection 流程，确保指标被正确计算
                     # execute_selection 包含：数据验证 -> 快速过滤 -> 计算指标 -> 选股条件检查
@@ -1802,14 +3417,107 @@ class BacktestEngine:
         strategy_display_name = strategy.name if strategy else strategy_name
         logger.info(f"评分使用的策略名称: {strategy_display_name} (类名: {strategy_name})")
 
+<<<<<<< HEAD
+=======
+        # 入池规则：简化模式下评分器只判一票否决（跳过所有维度打分）
+        from trading.pool_entry_rules import (POOL_ENTRY_MODE_VETO_ONLY,
+                                              resolve_pool_entry_mode,
+                                              resolve_pool_entry_simplified)
+
+        _ec = self._load_engine_config()
+        _simplified = resolve_pool_entry_simplified({}, _ec)
+        # ★【2026-09-27 用户口径 ✓】`veto_only` ⇒ **真的不算分** ✗（只判否决 ✓）
+        #   （此前"去评分"只忽略门槛 ✗，分照算 ✗ ⇒ 日志里仍出现"资金面得分"✗）
+        _veto_only = (resolve_pool_entry_mode({}, _ec) == POOL_ENTRY_MODE_VETO_ONLY)
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 使用回测专用评分器进行批量评分
         scored_stocks = self.score_calculator.calculate_batch_scores(
             stocks=stocks,
             score_date=date_str,
+<<<<<<< HEAD
             strategy_name=strategy_display_name
+=======
+            strategy_name=strategy_display_name,
+            simplified=_simplified,
+            veto_only=_veto_only,
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         )
 
         return scored_stocks
+
+<<<<<<< HEAD
+    def _select_and_score_stocks(self, strategy_name: str, date: date, config: Dict) -> List[Dict]:
+        """执行选股、评分、筛选，得到候选股票池
+        
+        封装选股流程，返回通过评分的候选股票列表。
+        
+        Args:
+            strategy_name: 策略名称
+            date: 选股日期
+            config: 回测配置
+            
+        Returns:
+            候选股票列表（已评分且通过筛选）
+        """
+=======
+    @staticmethod
+    def _skip_selection_switch(config: Dict = None) -> bool:
+        """★【2026-09-29 用户要求 ✓】"不开新仓 ⇒ 跳过选股"的**开关**（默认 **开** ✓）
+
+        ⚠️ 任何异常 ⇒ **按"开"处理** ✓（= 用户现行口径 ✓）；关掉即**旧行为** ✓ 便于 A/B ✓。
+        """
+        try:
+            from trading.index_adx_filter import should_skip_selection_when_blocked
+            return bool(should_skip_selection_when_blocked(config))
+        except Exception:
+            return True
+
+    def _day_no_new_position(self, current_date, config: Dict):
+        """★【2026-09-29 用户要求 ✓】**当日是否"不开新仓"**（供**日级跳过选股** ✓）
+
+        用户口径 ✓："回测时，如果判定当日**不开新仓**，跳过选股执行过程，
+        直接返回选股结果为 0" ✓ + "**建议作为开关参数，便于对比回测效果**" ✓。
+
+        Returns:
+            命中 ⇒ `index_position_cap` 结果（含 `rule` ✓，用于日志 ✓）；否则 `None` ✓
+
+        ⚠️ **只判档位** ✗✓（不传持仓比例 ✓）：`cap<=0` 只由"**其他档**"决定 ✓
+          （`18≤ADX≤25` / `dir≠上升` / 缺数据 ✓），与持仓无关 ✓；
+          "持仓 ≥ 上限 ⇒ 停"属**逐票**判定 ✓，仍由首仓分支的
+          `index_position_cap_gate` 负责 ✓ —— **两处同一实现** ✗✓（不会出现口径相冲 ✗）。
+        ⚠️ **开关** ✓：`skip_selection_when_no_new_position`（默认 true ✓）；
+          设 `false` ⇒ 恒返回 None ⇒ **旧流程** ✓（选股/评分照跑、结果置 0 ✓）。
+        ⚠️ 防前视 ✓：`index_position_cap` 内部只用 **T-1** ✓（见 `index_adx_filter` ✓）。
+        ⚠️ 任何异常 ⇒ 返回 None ✓（**绝不改变原行为** ✗✓ —— 这只是一步"省算力"优化 ✓）。
+        """
+        try:
+            from trading.index_adx_filter import (any_board_release,
+                                                  index_position_cap,
+                                                  is_index_position_cap_enabled)
+            if not self._skip_selection_switch(config):
+                return None
+            if not is_index_position_cap_enabled(config):
+                return None
+            cap = index_position_cap(current_date, config)
+            if float(cap.get('cap') or 0.0) <= 0.0:
+                # ★★【2026-10-05 用户要求 ✓】**板块回退**时**不得**跳过选股 ✗→✓ ★★
+                #   为什么必须接 ✗✓（实测最容易漏的一处 ✓）：全A 兜底 0% ✗ 但
+                #     科创板/创业板指数放行 ✓ ⇒ 当日**仍有可买标的** ✗ ⇒ 若此刻仍
+                #     "跳过选股"✗ ⇒ 当日**无候选入池** ✗ ⇒ **次日也没得买** ✗
+                #     ⇒ 该功能**永远买不到** ✗✓（看起来"规则写了却不生效"✗）。
+                #   ⇒ 只要**任一板块指数放行** ⇒ 视为"当日有开新仓机会" ⇒ **不跳过** ✓。
+                #   ⚠️ 与逐票闸门**同一判据实现** ✗✓（都走 `index_adx_filter` ✓，不另写阈值 ✗）。
+                if any_board_release(current_date, config):
+                    logger.info(
+                        f'【不跳过选股】{current_date}：全A 兜底仓位上限 0% ✗，但'
+                        f'**科创板/创业板指数放行** ✓ ⇒ 当日仍有可买标的 ⇒ '
+                        f'**照常选股** ✓（逐票闸门再判"是否属对应板块" ✓）')
+                    return None
+                return cap
+        except Exception as e:
+            logger.debug(f'当日"不开新仓"预判失败（按**不跳过**处理 ✓）: {e}')
+        return None
 
     def _select_and_score_stocks(self, strategy_name: str, date: date, config: Dict) -> List[Dict]:
         """执行选股、评分、筛选，得到候选股票池
@@ -1824,6 +3532,7 @@ class BacktestEngine:
         Returns:
             候选股票列表（已评分且通过筛选）
         """
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         logger.info(f"开始执行选股，策略: {strategy_name}，择时策略: {self.timing_strategy_name}，日期: {date}")
         
         # 执行选股
@@ -1833,6 +3542,7 @@ class BacktestEngine:
         if not selected_stocks:
             return []
         
+<<<<<<< HEAD
         # 评分
         logger.info(f"开始对 {len(selected_stocks)} 只股票进行评分")
         scored_stocks = self._score_stocks(selected_stocks, strategy_name, date)
@@ -1849,6 +3559,70 @@ class BacktestEngine:
             if not stock.get('veto_flag', False) and stock['score'] >= score_threshold
         ]
         
+=======
+        # 筛选：入池规则（可配置，见 trading/pool_entry_rules.py）
+        #   simplified=True  → 只剔除一票否决，其余全部入池（解决池/持仓不足）
+        #   simplified=False → 原行为：否决票 + 评分达标
+        from trading.pool_entry_rules import (filter_candidates,
+                                              resolve_pool_entry_mode,
+                                              resolve_pool_entry_simplified,
+                                              should_skip_scoring)
+
+        _ec = self._load_engine_config()
+        score_threshold = config.get('score_threshold', 60)
+        _simplified = resolve_pool_entry_simplified(config, _ec)
+        # 【2026-09-26】入池模式 ✓（默认 `scored` ✗ = 现状 ✓；`veto_only` = **去除评分** ✓；
+        #   `direct` = **直通入池** ✓ = 无评分 ∧ 无否决 ✓，见下 ✓）
+        _mode = resolve_pool_entry_mode(config, _ec)
+
+        # ★★【2026-09-29 用户要求 ✓】`direct` ⇒ **连评分都不跑** ✗→✓ ★★
+        #   用户原话 ✓："去除股票评分（**包括一票否决**）环节，策略选出的股票**直接入池**" ✓
+        #   ⇒ 与 `veto_only` 的**关键差别** ✗✓：`veto_only` 仍要把评分器跑一遍 ✗
+        #     （只是"不算分 ✓、只判否决 ✗"⇒ 被否决的**依旧入不了池** ✗）；
+        #     `direct` 则**整个 `_score_stocks` 都不调用** ✓ ⇒
+        #       ① **无否决** ✓（资金面/事件/基本面否决**根本不计算** ✗）；
+        #       ② **省掉五维评分开销** ✓（回测提速 ✓）。
+        #   ⚠️ 这里**必须显式补占位字段** ✓（`score` / `veto_flag` ✓）—— 下方日志与
+        #      `filter_candidates` 都会读 ✓（`direct` 分支虽不看 ✓，但日志要打 ✓）。
+        if should_skip_scoring(config, _ec):
+            scored_stocks = []
+            for _s in selected_stocks:
+                _s = dict(_s)                      # 不改调用方对象 ✓
+                _s['score'] = 0.0                  # ★ 未评分 ⇒ 占位 0 ✓（**不是**"评了 0 分"✗）
+                _s['veto_flag'] = False            # ★ 未判否决 ⇒ 一律 False ✓
+                scored_stocks.append(_s)
+            logger.info(f"【跳过评分】`pool_entry_mode=direct` ✓ ⇒ {len(scored_stocks)} 只"
+                        f"**不做五维评分、不判一票否决** ✗ ⇒ **直接入池** ✓"
+                        f"（策略选出即入池 ✓；买入前置过滤 / ADX 闸门 / 仓位上限**照旧生效** ✓）")
+        else:
+            # 评分
+            logger.info(f"开始对 {len(selected_stocks)} 只股票进行评分")
+            scored_stocks = self._score_stocks(selected_stocks, strategy_name, date)
+
+            # 记录每只股票的综合评分
+            logger.info("\n股票评分详情:")
+            for stock in scored_stocks:
+                logger.info(f"  - {stock['stock_code']} {stock['stock_name']}: 综合评分={stock['score']}，否决标志={stock.get('veto_flag', False)}")
+
+        candidate_stocks = filter_candidates(scored_stocks, score_threshold,
+                                             _simplified, mode=_mode)
+        # 【2026-09-27】把**当前模式**打出来 ✓（一眼可见跑的是 legacy 还是 adx ✓）
+        try:
+            from utils.backtest_mode import describe as _describe_mode
+            logger.info("【模式】" + _describe_mode(config, _ec))
+        except Exception:
+            pass
+        if _mode == 'direct':
+            logger.info("【入池规则】direct（**直通入池** ✓）：策略选出**全部入池** ✓"
+                        "（无评分 ✗、无一票否决 ✗）")
+        elif _mode == 'veto_only':
+            logger.info("【入池规则】veto_only（**去除评分** ✗）：只排除一票否决 ✓")
+        elif _simplified:
+            logger.info(f"【入池规则】简易评分：先排除一票否决，资金面得分>={score_threshold} 入池")
+        else:
+            logger.info(f"【入池规则】标准评分：否决票 + 综合评分>={score_threshold}")
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         logger.info(f"\n筛选后待买入股票数: {len(candidate_stocks)}")
         if candidate_stocks:
             logger.info("待买入股票列表:")
@@ -1856,7 +3630,328 @@ class BacktestEngine:
                 logger.info(f"  - {stock['stock_code']} {stock['stock_name']}: 评分={stock['score']}")
         
         return candidate_stocks
+<<<<<<< HEAD
     
+=======
+
+    def _add_holdings_to_pool(self, positions, current_date, today_sold_stocks,
+                              strategy_name: str = '', enabled: bool = True) -> int:
+        """持仓股自动入池（**当日已卖出的不计**），返回新增数量
+
+        目的：策略切换清空股票池 / 候选被买入消费后，持仓股仍留在候选池中，
+              这样择时给出 add 信号时才能正常加仓（否则池空 → 无法加仓）。
+
+        Args:
+            positions: 持仓。回测为 `list[dict]`（含 stock_code/stock_name）；
+                       实盘为 `dict{code: {...}}`（键已归一化为纯数字代码）——两者均支持。
+            current_date: 当日日期
+            today_sold_stocks: 当日已卖出代码集合（不计入池）
+            strategy_name: 当日策略名（写入池条目，供 Kelly/池移除配置查找）
+            enabled: 开关（调用方从 `pool_entry.auto_add_holdings` 解析后传入）
+
+        说明：
+          - 已在池中的不重复加入；
+          - 入池评分记为 0（仅用于池内排序，不会抢占新股优先级）；
+          - 支撑位按当前策略计算（失败则记 0，不影响流程）。
+        """
+        if not enabled:
+            return 0
+
+        added = 0
+        try:
+            # 兼容 dict（实盘 self.portfolio）与 list（回测 positions）
+            if isinstance(positions, dict):
+                items = [{'stock_code': code,
+                          'stock_name': (pos or {}).get('stock_name', '')}
+                         for code, pos in positions.items()]
+            else:
+                items = list(positions or [])
+
+            pool_codes = {c.get('stock', {}).get('stock_code')
+                          for c in self.buy_candidate_pool}
+            for pos in items:
+                code = pos.get('stock_code')
+                if (not code or code in pool_codes
+                        or code in (today_sold_stocks or set())):
+                    continue
+
+                info = {'stock_code': code,
+                        'stock_name': pos.get('stock_name', ''),
+                        'score': 0,
+                        'veto_flag': False}
+                try:
+                    sup = self._calculate_support_level(info, current_date, strategy_name)
+                    sup_method = self._get_support_method_for_strategy(strategy_name)
+                except Exception as e:
+                    sup, sup_method = 0.0, 'unknown'
+                    logger.debug(f"持仓股 {code} 支撑位计算失败: {e}")
+
+                self.buy_candidate_pool.append({
+                    'stock': info,
+                    'added_date': current_date,
+                    'key_date': (current_date.strftime('%Y-%m-%d')
+                                 if hasattr(current_date, 'strftime') else str(current_date)),
+                    'strategy_name': strategy_name,
+                    'support_level': sup,
+                    'support_method': sup_method,
+                    'from_holding': True,      # 标记来源：持仓股自动入池
+                })
+                pool_codes.add(code)
+                added += 1
+
+            if added:
+                logger.info(f"【持仓入池】新增 {added} 只持仓股到股票池（当日卖出不计），"
+                            f"池内合计 {len(self.buy_candidate_pool)} 只")
+        except Exception as e:
+            logger.warning(f"持仓股入池失败（不影响回测）: {e}")
+        return added
+    
+    def _has_trading_data_on_date(self, stock_code: str, date: date) -> bool:
+        """检查股票在指定日期是否有真实行情数据（非停牌、非退市）
+        
+        回测时通过股票缓存判断：如果缓存中该股票没有指定日期的任何数据，
+        说明该股票在当日停牌或已退市，不可交易。
+        
+        Args:
+            stock_code: 股票代码
+            date: 检查日期
+            
+        Returns:
+            True: 有真实行情数据，可交易
+            False: 无数据（停牌/退市），不可交易
+        """
+        date_str = date.strftime('%Y-%m-%d')
+        
+        # 从缓存中查找该日期是否有数据
+        df = self.stock_data_cache.get(stock_code)
+        if df is None or df.empty:
+            return False
+        
+        # 检查当日是否有数据行
+        df_date = df[df['date'] == date_str]
+        if df_date.empty:
+            return False
+        
+        # 检查关键价格字段是否有效（open > 0 表示有真实交易）
+        if 'open' in df_date.columns:
+            open_val = df_date.iloc[0]['open']
+            if open_val is None or (hasattr(open_val, '__float__') and float(open_val) <= 0):
+                return False
+        
+        return True
+
+    # ==================== 双边成交滑点（2026-09-23 新增）====================
+    # 为什么需要：原实现 open 模式按 T 日开盘价**零滑点**成交 ✗，且
+    #   calculate_backtest_cost 明确"不含滑点" ✗ → 回测系统性偏乐观 ✗。
+    # 口径（对**最终成交价**双边调整 ✓，费用仍按原口径另计 ✓）：
+    #   买入成交价 = 基准成交价 × (1 + buy)
+    #   卖出成交价 = 基准成交价 × (1 - sell)
+    # 读取优先级：run_backtest 的 config['slippage'] > config/backtest_engine_config.yaml
+    #             的 slippage 节 > 本默认值（各 0.3% ✓）
+    # 设为 0 可关闭（用于复现历史回测结果 ✓）。
+    # 注意：ma_limit 买入模式的委托价**自带** slippage ✗ → 该模式不再叠加本滑点 ✓（避免双计 ✗）
+    DEFAULT_SLIPPAGE = {'buy': 0.003, 'sell': 0.003}
+
+    def _slippage_rates(self, config: Dict) -> Dict[str, float]:
+        """解析双边滑点比例（买入/卖出 ✓）"""
+        rates = dict(self.DEFAULT_SLIPPAGE)
+        # 1) 引擎配置文件 config/backtest_engine_config.yaml 的 slippage 节
+        try:
+            file_cfg = (self._load_engine_config() or {}).get('slippage')
+            if isinstance(file_cfg, dict):
+                for k in ('buy', 'sell'):
+                    if file_cfg.get(k) is not None:
+                        rates[k] = max(0.0, float(file_cfg[k]))
+        except (TypeError, ValueError):
+            pass
+        # 2) run_backtest 传入的 config['slippage']（最高优先级 ✓）
+        raw = (config or {}).get('slippage')
+        if raw is not None:
+            try:
+                if isinstance(raw, dict):
+                    for k in ('buy', 'sell'):
+                        if raw.get(k) is not None:
+                            rates[k] = max(0.0, float(raw[k]))
+                else:
+                    v = max(0.0, float(raw))      # 标量写法：买卖同值 ✓
+                    rates['buy'] = rates['sell'] = v
+            except (TypeError, ValueError):
+                pass
+        return rates
+
+    # 买入执行方式默认配置
+    # mode 默认 'open'，保证不配置时行为与改造前完全一致（后向兼容）
+    DEFAULT_BUY_EXECUTION = {
+        'mode': 'open',               # open=开盘价无条件成交 | ma_limit=均线委托+滑点+触达成交
+        'ma_period': 5,               # 委托价基准均线周期（5日线）
+        'ma_source': 'close',         # 均线计算所用价格字段
+        'ma_base': 'prev_day',        # 均线基准日：prev_day=截至T-1（防前视）
+        'slippage': 0.005,            # 滑点 0.5%（买入取不利方向，即更贵）
+        'fill_price': 'better',       # better=min(开盘价, 委托价) | limit=委托价
+        'min_periods': 5,             # 均线有效所需最小样本数
+        'insufficient_data': 'fallback_open',  # 样本不足时回退开盘价成交
+        'on_unfilled': 'keep',        # 未成交时保留候选池
+    }
+
+    @staticmethod
+    def _should_apply_buy_filter(result, existing_pos) -> bool:
+        """买入前K线过滤是否生效
+
+        仅【首次建仓】生效；【加仓】跳过该过滤：
+          - 加仓由择时策略自身条件把关，重复过滤会误杀已盈利的加仓信号
+          - 与实盘运行器保持一致（运行器加仓不做涨幅/涨停基因检查）
+
+        Args:
+            result: 择时结果（TimingResult）
+            existing_pos: 已有持仓（None 表示首次建仓）
+
+        Returns:
+            True=执行K线过滤，False=跳过
+        """
+        if result is None:
+            return existing_pos is None
+        trade_type = getattr(result, 'trade_type', '') or ''
+        if trade_type == 'add':
+            return False
+        return existing_pos is None
+
+    @staticmethod
+    def _should_apply_adx_filter(result, existing_pos) -> bool:
+        """个股 ADX 闸门是否参与 ✓（**首仓 + 加仓 均 `True`** ✗✓，§5.6 ✓，2026-09-26 用户定稿 ✓）
+
+        ⚠️ 与 `_should_apply_buy_filter` **语义不同** ✗✓：
+          · 后者对**加仓**返回 `False` ✗（整体跳过 K线过滤 ✓，避免误杀已盈利加仓 ✓）；
+          · 本闸门**必须覆盖加仓** ✓（用户要求"加仓需要过滤：开盘涨幅 + ADX" ✓）。
+        ⇒ 故**独立新增** ✓；且**不得**在其上叠加 K线过滤 ✗
+          （否则会把「规则1 20日低点涨幅 ✓ / 规则4 涨停基因 ✓」也套到加仓 ✗ ⇒ 误杀 ✓）。
+
+        实际开关由 `enable_stock_adx_filter` 在闸门内部判定 ✓（**默认关** ✗ ⇒ 现状不变 ✓）；
+        加仓的「规则2（开盘 ±4%）」默认**开** ✓（`enable_add_open_rise_check` ✓）。
+        """
+        return True
+
+    def _get_highest_price_since_entry(self, stock_code: str, buy_date,
+                                       until_date, buy_price: float) -> float:
+        """获取建仓以来（【不含建仓日】）至 until_date 的最高价（用于移动止损）
+
+        与实盘运行器保持一致（实盘 `_exclude_buy_day` 排除建仓日）：
+        建仓日成交前形成的高点不应计入"买入以来最高价"，
+        否则移动止损位被抬高，建仓首日即可能误触发移动止损。
+
+        Args:
+            stock_code: 股票代码
+            buy_date: 建仓日（date）
+            until_date: 截止日（date，含）；None 时返回 buy_price
+            buy_price: 买入价（无有效数据时兜底）
+
+        Returns:
+            最高价（不低于 buy_price）
+        """
+        if buy_date is None or until_date is None:
+            return buy_price
+
+        df = self.stock_data_cache.get(stock_code)
+        if df is None or df.empty:
+            return buy_price
+
+        buy_date_str = buy_date.strftime('%Y-%m-%d')
+        until_str = until_date.strftime('%Y-%m-%d')
+        # 不含建仓日：起始日严格大于建仓日
+        mask = (df['date'] > buy_date_str) & (df['date'] <= until_str)
+        filtered_df = df[mask]
+        if filtered_df.empty:
+            return buy_price
+
+        return max(buy_price, float(filtered_df['high'].max()))
+
+    def _resolve_buy_execution(self, stock_code: str, current_date: date,
+                               config: Dict, df_to_date: pd.DataFrame = None) -> Dict:
+        """解析买入执行结果：委托价、是否成交、成交价与未成交原因
+
+        两种模式（由 config['buy_execution']['mode'] 决定）：
+          - 'open'（默认）：T 日开盘价无条件成交，行为与改造前一致（后向兼容）
+          - 'ma_limit'：以截至 T-1 的均线为基准计算委托价（含滑点），
+            仅当 T 日最低价 <= 委托价 才视为成交；成交价取 min(开盘价, 委托价)
+
+        Args:
+            stock_code: 股票代码
+            current_date: 当前回测日期（T 日）
+            config: 回测配置，读取其中的 buy_execution 节
+            df_to_date: 截至 T 日的K线（倒序，最新在前），用于计算均线
+
+        Returns:
+            dict: {'filled': 是否成交, 'price': 成交价, 'order_price': 委托价,
+                   'reason': 未成交原因, 'mode': 执行方式}
+        """
+        # 合并配置：引擎内置默认 < 配置文件(backtest_engine_config.yaml) < 回测参数
+        cfg = dict(self.DEFAULT_BUY_EXECUTION)
+        engine_config = self._load_engine_config() or {}
+        cfg.update(engine_config.get('buy_execution') or {})
+        cfg.update(config.get('buy_execution') or {})
+        mode = cfg.get('mode', 'open')
+
+        # T 日开盘价：两种模式都需要（ma_limit 用于 better 成交价与样本不足回退）
+        open_price = self._get_stock_price(stock_code, current_date, 'open')
+        if open_price is None or open_price <= 0:
+            # T 日无开盘数据时回退到前一交易日，避免无法成交（沿用原有逻辑）
+            prev_buy_day = self._get_previous_trading_day(current_date)
+            open_price = self._get_stock_price(
+                stock_code, prev_buy_day, 'open') if prev_buy_day else None
+
+        # 模式一：开盘价无条件成交（保持原行为）
+        if mode != 'ma_limit':
+            if open_price is None or open_price <= 0:
+                return {'filled': False, 'price': 0.0, 'order_price': 0.0,
+                        'reason': '无有效开盘价', 'mode': mode}
+            return {'filled': True, 'price': open_price, 'order_price': open_price,
+                    'reason': '', 'mode': mode}
+
+        # 模式二：均线委托 + 滑点 + 最低价触达判定
+        ma_period = int(cfg.get('ma_period', 5))
+        min_periods = int(cfg.get('min_periods', ma_period))
+        ma_source = cfg.get('ma_source', 'close')
+        slippage = float(cfg.get('slippage', 0.005))
+
+        # 1) 计算截至 T-1 的均线：df_to_date 为倒序（最新在前），第 0 行是 T 日，
+        #    必须剔除后再取窗口，否则会把 T 日收盘价算进去造成前视偏差
+        ma_value = None
+        if df_to_date is not None and not df_to_date.empty and ma_source in df_to_date.columns:
+            hist = df_to_date[ma_source].iloc[1:] if len(df_to_date) > 1 else df_to_date[ma_source]
+            hist = pd.to_numeric(hist, errors='coerce').dropna()
+            if len(hist) >= min_periods:
+                ma_value = float(hist.iloc[:ma_period].mean())
+
+        # 2) 样本不足（如新上市不足5日）→ 按确认口径取开盘价成交
+        if ma_value is None or ma_value <= 0:
+            if open_price and open_price > 0:
+                return {'filled': True, 'price': open_price, 'order_price': open_price,
+                        'reason': '均线样本不足，回退开盘价成交', 'mode': mode}
+            return {'filled': False, 'price': 0.0, 'order_price': 0.0,
+                    'reason': '均线样本不足且无开盘价', 'mode': mode}
+
+        # 3) 委托价：买入滑点取不利方向（更贵）
+        order_price = ma_value * (1.0 + slippage)
+
+        # 4) 当日最低价（用于判断是否触达委托价）
+        low_price = self._get_stock_price(stock_code, current_date, 'low')
+        if low_price is None or low_price <= 0:
+            low_price = open_price
+
+        # 5) 触达判定：最低价 <= 委托价 才算成交
+        if low_price is None or low_price > order_price:
+            return {'filled': False, 'price': order_price, 'order_price': order_price,
+                    'reason': '当日最低价未触及委托价', 'mode': mode}
+
+        # 6) 成交价：better=min(开盘价, 委托价)，即以更优价格成交
+        if cfg.get('fill_price', 'better') == 'better' and open_price and open_price > 0:
+            fill_price = min(open_price, order_price)
+        else:
+            fill_price = order_price
+
+        return {'filled': True, 'price': fill_price, 'order_price': order_price,
+                'reason': '', 'mode': mode}
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     def _get_stock_price(self, stock_code: str, date: date, price_type: str) -> float:
         """获取股票价格
         
@@ -1903,6 +3998,9 @@ class BacktestEngine:
                     pass
                 
                 if tushare_token:
+                    # 【2026-09-25 新增闸门 ✓】回测取价属**评分侧** ✗ ⇒ 禁止即时联网 ✗✓
+                    from utils.online_guard import PURPOSE_SCORE, guard_online_call
+                    guard_online_call('Tushare daily（回测取价兜底）', purpose=PURPOSE_SCORE)
                     pro = ts.pro_api(tushare_token)
                     df = pro.daily(
                         ts_code=f"{stock_code}.SH" if stock_code.startswith('6') else f"{stock_code}.SZ",
@@ -1948,7 +4046,8 @@ class BacktestEngine:
             if stock_code in self.stock_data_cache:
                 df = self.stock_data_cache[stock_code]
                 # 查找目标日期之前最近的有效收盘价
-                df_before = df[df['date'] < date_str].head(1)
+                # 数据按日期升序排列，使用 iloc[-1:] 确保取到最接近目标日期的最近一天
+                df_before = df[df['date'] < date_str].iloc[-1:]
                 if not df_before.empty and 'close' in df_before.columns:
                     prev_close = df_before.iloc[0]['close']
                     if prev_close is not None and not pd.isna(prev_close):
@@ -2009,6 +4108,118 @@ class BacktestEngine:
             'sell_stamp_tax': 0
         }
     
+<<<<<<< HEAD
+=======
+    def _current_position_ratio(self, current_date, positions: List[Dict],
+                                current_capital: float) -> float:
+        """当日**持仓比例** ✓ = `1 − 现金/总资产` ✓（总资产按**前一日收盘价**估值 ✓
+        —— 与凯利金额**同一口径** ✓ ⇒ 无未来函数 ✓）
+
+        ⚠️ **必须按日缓存** ✗✓：本函数在**买入循环内逐票**调用 ✗，而 `_calc_total_assets`
+          对**每只持仓**都要取一次价 ✗ ⇒ 不缓存会把回测拖慢 ✗（实测同类问题踩过 ✓：
+          `index_adx_filter` 首版 20000 次 **92.8s** ✗）。
+          缓存键含 **现金 + 持仓数** ✓ ⇒ **成交后自动失效** ✓（不会用旧比例继续放行 ✓）。
+        """
+        try:
+            key = (str(current_date), round(float(current_capital or 0.0), 2),
+                   len(positions or []))
+        except (TypeError, ValueError):
+            key = None
+        cache = getattr(self, '_pos_ratio_cache', None)
+        if cache is None:
+            cache = {}
+            self._pos_ratio_cache = cache
+        if key is not None and key in cache:
+            return cache[key]
+        cash = float(current_capital or 0.0)
+        try:
+            ta = float(self._calc_total_assets(current_date, positions or [], cash) or 0.0)
+        except Exception as e:                   # 估值失败 ⇒ 按"满仓"✓（**最保守** ✓：
+            logger.debug(f'总资产估值失败（按满仓处理 ✓）: {e}')   # 只会**拦买** ✓，不会误放行 ✓）
+            return 1.0
+        ratio = 0.0 if ta <= 0 else max(0.0, min(1.0, (ta - cash) / ta))
+        if key is not None:
+            cache[key] = ratio
+        return ratio
+
+    def _calc_total_assets(self, current_date, positions: List[Dict],
+                           current_capital: float) -> float:
+        """计算总资产 = 可用资金 + 持仓市值
+
+        持仓市值用**前一交易日收盘价**估值，避免未来函数（与首次建仓的凯利金额口径一致）。
+        供首次建仓与加仓共用，确保两处凯利金额一致。
+        """
+        total_assets = current_capital
+        prev_trading_day = self._get_previous_trading_day(current_date)
+        for position in positions:
+            position_price = self._get_stock_price(position['stock_code'], prev_trading_day, 'close')
+            if position_price is None or position_price <= 0:
+                position_price = position['buy_price']
+            total_assets += position['quantity'] * position_price
+        return total_assets
+
+    def _check_no_new_high_exit(self, stock_code: str, as_of_date, window: int,
+                                ma_period: int, buy_date=None) -> Tuple[bool, bool, str]:
+        """判断"三日（滚动）未创新高 且 收盘跌破 N 日线"卖出条件
+
+        判据（均以 as_of_date 及之前的数据为准，避免前视偏差）：
+          A. **未创新高**：最近 window 日的最高价 < **买入以来**的最高价
+             `max(high[-window:]) < max(high[buy_date .. as_of_date])`
+             —— 即近 window 日再也刷不出持仓期新高，涨势已停滞
+          B. **跌破均线**：as_of_date 收盘 < MA(ma_period)（默认 5 日线）
+
+        Args:
+            stock_code: 股票代码
+            as_of_date: 判定基准日（调用方传 T-1，避免前视偏差）
+            window: 未创新高的滚动窗口（默认 3 个交易日）
+            ma_period: 均线周期（默认 5）
+            buy_date: 建仓日；"买入以来最高价"自该日起算（含建仓日）。
+                      未提供时退化为"截至基准日的全部数据"。
+
+        返回:
+            (A 是否成立, B 是否成立, 说明文本)
+        """
+        try:
+            df = self.stock_filtered_cache.get(stock_code)
+            if df is None or df.empty:
+                return False, False, '无K线数据'
+            d = df
+            # 统一为正序（最旧在前）
+            if len(d) > 1 and str(d['date'].iloc[0]) > str(d['date'].iloc[-1]):
+                d = d.iloc[::-1].reset_index(drop=True)
+            date_str = (as_of_date.strftime('%Y-%m-%d')
+                        if hasattr(as_of_date, 'strftime') else str(as_of_date))
+            d = d[d['date'] <= date_str]
+            need = max(window, ma_period)
+            if len(d) < need:
+                return False, False, f'数据不足({len(d)}<{need})'
+            high = d['high'].astype(float)
+            close = d['close'].astype(float)
+            recent_high = float(high.iloc[-window:].max())
+
+            # 买入以来最高价（含建仓日）
+            if buy_date is not None:
+                bd_str = (buy_date.strftime('%Y-%m-%d')
+                          if hasattr(buy_date, 'strftime') else str(buy_date))
+                since_entry = d[d['date'] >= bd_str]
+            else:
+                since_entry = d
+            since_high = (float(since_entry['high'].max())
+                          if not since_entry.empty else recent_high)
+
+            ma = float(close.iloc[-ma_period:].mean())
+            cur_close = float(close.iloc[-1])
+            a = recent_high < since_high
+            b = cur_close < ma
+            detail = (f'近{window}日最高{recent_high:.2f} < 买入以来最高{since_high:.2f}'
+                      f'(未创新高={a})；收盘{cur_close:.2f} vs MA{ma_period} '
+                      f'{ma:.2f}(破线={b})')
+            return a, b, detail
+        except Exception as e:
+            logger.debug(f'三日未创新高判定异常({stock_code}): {e}')
+            return False, False, '判定异常'
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     def _process_sell(self, positions: List[Dict], current_date: date, config: Dict) -> Tuple[List[Dict], List[Dict]]:
         """处理卖出操作
         
@@ -2036,11 +4247,25 @@ class BacktestEngine:
         enable_trailing_stop = config.get('enable_trailing_stop', True)
         base_stop_level = -6  # 基础止损固定为-6%
         trailing_trigger_threshold = 5  # 触发移动止损的最低收益率（最高收益≥5%才启用移动止损）
+<<<<<<< HEAD
         
         # 获取亏损冷却期配置
         enable_loss_cool_down = config.get('enable_loss_cool_down', True)
         cool_down_threshold = config.get('cool_down_threshold', -8)
         cool_down_days = config.get('cool_down_days', 20)
+=======
+        # 移动止损自最高价的回撤比例(%，默认8；与实盘运行器一致)
+        trailing_drawdown_pct = config.get('trailing_drawdown_pct', 8)
+        
+        # 获取亏损冷却期配置
+        #   2026-09-12 新规则：任意亏损即冷却 1 个月（21 个交易日）；
+        #   连续亏损 2 次冷却 1 年（250 个交易日）。
+        #   默认**取消亏损门槛**（cool_down_threshold 不配置 = 无门槛）；
+        #   如需恢复阈值，显式配置 cool_down_threshold（如 -8）即可。
+        enable_loss_cool_down = config.get('enable_loss_cool_down', True)
+        cool_down_threshold = config.get('cool_down_threshold')   # None = 无门槛
+        cool_down_days = config.get('cool_down_days', 21)         # 1 个月
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 获取持仓过期配置（提高资金利用率）
         enable_position_expire = config.get('enable_position_expire', True)
@@ -2050,7 +4275,11 @@ class BacktestEngine:
         # 获取连续亏损限制配置
         enable_consecutive_loss_limit = config.get('enable_consecutive_loss_limit', True)
         max_consecutive_losses = config.get('max_consecutive_losses', 2)
+<<<<<<< HEAD
         consecutive_loss_cool_down = config.get('consecutive_loss_cool_down', 30)
+=======
+        consecutive_loss_cool_down = config.get('consecutive_loss_cool_down', 250)   # 1 年
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         for position in positions:
             stock_code = position['stock_code']
@@ -2062,6 +4291,7 @@ class BacktestEngine:
             trading_days = self._get_trading_dates(buy_date_str, current_date_str)
             hold_days = len(trading_days) - 1
             
+<<<<<<< HEAD
             # 获取当日开盘价和最高价
             open_price = self._get_stock_price(stock_code, current_date, 'open')
             high_price = self._get_stock_price(stock_code, current_date, 'high')
@@ -2082,6 +4312,44 @@ class BacktestEngine:
             
             # 毛估收益率 = (卖出金额 - 预估卖出成本 - 实际买入成本) / 实际买入成本
             gross_sell_amount = open_price * position['quantity']
+=======
+            # 止盈止损信号判定用前一日收盘价；实际成交用T日开盘价（前一日收盘判定触发，当日开盘卖出）
+            prev_trading_day = self._get_previous_trading_day(current_date)
+            # 止损信号严格使用T-1日收盘价，无数据时不做止损判断（避免前视偏差）
+            signal_close = self._get_stock_price(stock_code, prev_trading_day, 'close') if prev_trading_day else None
+            # 实际成交价：处理日(current_date)当天开盘价
+            sell_price = self._get_stock_price(stock_code, current_date, 'open')
+            if sell_price is None or sell_price <= 0:
+                # 当日无开盘数据时回退到当日收盘价，避免无法成交
+                sell_price = self._get_stock_price(stock_code, current_date, 'close')
+            # 【2026-09-23】卖出滑点：成交价取不利方向（更便宜 ✓）
+            _slip = getattr(self, '_slippage', self.DEFAULT_SLIPPAGE)
+            if sell_price and sell_price > 0 and _slip['sell']:
+                sell_price = round(sell_price * (1.0 - _slip['sell']), 4)
+            
+            # 停牌/退市检查：当日无行情数据时不可卖出，保留持仓
+            if not self._has_trading_data_on_date(stock_code, current_date):
+                logger.info(f"  {stock_code} {stock_name} - 当日{current_date}无行情数据（停牌/退市），保留持仓")
+                remaining_positions.append(position)
+                continue
+            
+            # 计算含成本的收益率
+            # 买入成本
+            buy_commission = position.get('buy_commission', 0)
+            buy_transfer_fee = position.get('buy_transfer_fee', 0)
+            total_buy_cost = buy_commission + buy_transfer_fee
+            # 实际投入成本 = 买入金额 + 买入佣金 + 过户费
+            actual_cost = position['buy_amount'] + total_buy_cost
+            
+            # 卖出时计算成本（预估，待创建卖出记录时更新）
+            # 注意：印花税只在卖出时收取
+            sell_commission_estimate = sell_price * position['quantity'] * 0.00015
+            sell_transfer_fee_estimate = sell_price * position['quantity'] * 0.00001 if stock_code.startswith('6') else 0
+            sell_stamp_tax_estimate = sell_price * position['quantity'] * 0.001  # 印花税预估
+
+            # 毛估收益率 = (卖出金额 - 预估卖出成本 - 实际买入成本) / 实际买入成本
+            gross_sell_amount = sell_price * position['quantity']
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             estimated_net_proceed = gross_sell_amount - sell_commission_estimate - sell_transfer_fee_estimate - sell_stamp_tax_estimate
             return_rate = (estimated_net_proceed - actual_cost) / actual_cost * 100
             
@@ -2091,6 +4359,7 @@ class BacktestEngine:
             
             # 计算从买入日期到前一交易日的最高价
             # 移动止损的最高价应该是买入日期至前一日的最高价，不包括当日最高价
+<<<<<<< HEAD
             current_highest_price = buy_price
             if stock_code in self.stock_data_cache:
                 df = self.stock_data_cache[stock_code]
@@ -2104,6 +4373,13 @@ class BacktestEngine:
                     filtered_df = df[mask]
                     if not filtered_df.empty:
                         current_highest_price = filtered_df['high'].max()
+=======
+            # 移动止损的最高价：截至前一日的最高价，且【不含建仓日】
+            # 与实盘运行器一致（实盘 _exclude_buy_day 排除建仓日）：
+            # 建仓日成交前形成的高点不应抬高移动止损位，否则建仓首日即可能误触发
+            current_highest_price = self._get_highest_price_since_entry(
+                stock_code, buy_date, prev_trading_day, buy_price)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             # 计算最高价收益率
             highest_price_return = (current_highest_price - buy_price) / buy_price * 100
@@ -2135,17 +4411,31 @@ class BacktestEngine:
                     if enable_trailing_stop:
                         # 移动止损逻辑：
                         # - 最高收益 < 5%：使用固定止损 -6%
+<<<<<<< HEAD
                         # - 最高收益 >= 5%：移动止损 = 截至前一日的最高价 × 92%
                         if highest_price_return >= trailing_trigger_threshold:
                             stop_price = current_highest_price * 0.92
+=======
+                        # - 最高收益 >= 5%：移动止损 = 截至前一日的最高价 × (1 - 回撤%)
+                        if highest_price_return >= trailing_trigger_threshold:
+                            stop_price = current_highest_price * (1 - trailing_drawdown_pct / 100)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                             current_stop = (stop_price - buy_price) / buy_price * 100
                         
                         logger.info(f"  {stock_code} {stock_name} - 移动止损: 买入价={buy_price:.2f}, 最高价={current_highest_price:.2f}, 最高价收益率={highest_price_return:.2f}%, 止损价={stop_price:.2f}")
                     
+<<<<<<< HEAD
                     # 检查是否触发止损（包括移动止损）
                     if open_price <= stop_price:
                         sell_type = 'trailing_stop' if current_stop > stop_loss else 'stop_loss'
                         logger.info(f"  {stock_code} {stock_name} - 触发{'移动' if current_stop > stop_loss else ''}止损: 当前价 {open_price:.2f} <= 止损价 {stop_price:.2f}")
+=======
+                    # 检查是否触发止损（包括移动止损），用前一日收盘价判定
+                    # signal_close 为 None 时跳过止损判断（无前一日数据，避免前视偏差）
+                    if signal_close is not None and signal_close > 0 and signal_close <= stop_price:
+                        sell_type = 'trailing_stop' if current_stop > stop_loss else 'stop_loss'
+                        logger.info(f"  {stock_code} {stock_name} - 触发{'移动' if current_stop > stop_loss else ''}止损: 信号价(前收) {signal_close:.2f} <= 止损价 {stop_price:.2f}")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 
                 # 2. 持仓过期检查（持有超过指定天数且收益率低于阈值）
                 if not sell_type and enable_position_expire:
@@ -2164,7 +4454,12 @@ class BacktestEngine:
                             # 仅当数据为升序时才反转
                             if len(df_to_date) > 1 and df_to_date['date'].iloc[0] < df_to_date['date'].iloc[-1]:
                                 df_to_date = df_to_date.iloc[::-1].reset_index(drop=True)
+<<<<<<< HEAD
                             result = self.timing_strategy.get_timing_result(df_to_date, position, 0)
+=======
+                            # 传入 stock_code 以隔离技术指标缓存，避免不同股票间指标复用
+                            result = self.timing_strategy.get_timing_result(df_to_date, position, 0, stock_code=stock_code)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                             
                             if result.is_sell:
                                 if result.trade_type == 'reduce':
@@ -2183,6 +4478,26 @@ class BacktestEngine:
                                     sell_quantity = position['quantity']
                                     logger.info(f"  策略信号: 清仓 - {result.message}")
                 
+<<<<<<< HEAD
+=======
+                # 4. 【可选】三日（滚动）未创新高 且 收盘跌破 N 日线 → 卖出
+                #    "未创新高" = max(最近 N 日最高价) < max(买入以来最高价)
+                #    【2026-09-15 暂时屏蔽】总开关 ENABLE_NO_NEW_HIGH_EXIT=False 时不参与判定；
+                #    改回 True 即恢复（普通回测仍需 config 开启；自适应默认值跟随总开关）
+                if (not sell_type and not reduce_quantity
+                        and self.ENABLE_NO_NEW_HIGH_EXIT
+                        and config.get('enable_no_new_high_exit', False)):
+                    _w = int(config.get('no_new_high_window', 3))
+                    _mp = int(config.get('no_new_high_ma', 5))
+                    _no_new_high, _below_ma, _detail = self._check_no_new_high_exit(
+                        stock_code, prev_trading_day, _w, _mp, buy_date)
+                    if _no_new_high and _below_ma:
+                        sell_type = 'no_new_high'
+                        logger.info(f"  {stock_code} {stock_name} - "
+                                    f"近{_w}日未创新高（未超买入以来最高价）且收盘跌破"
+                                    f"{_mp}日线，卖出: {_detail}")
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 if not sell_type and not reduce_quantity:
                     logger.info(f"  {stock_code} {stock_name} - 无卖出信号，继续持有")
             else:
@@ -2190,6 +4505,7 @@ class BacktestEngine:
             
             # 执行卖出操作
             if sell_type:
+<<<<<<< HEAD
                 # 执行清仓
                 sell_amount = open_price * sell_quantity
                 profit_loss = sell_amount - position['buy_amount'] * (sell_quantity / position['quantity'])
@@ -2207,6 +4523,25 @@ class BacktestEngine:
                 remaining_ratio = remaining_quantity / position['quantity']
                 
                 reduce_record = self._create_sell_record(position, current_date, open_price,
+=======
+                # 执行清仓（成交价用T+1开盘价）
+                sell_amount = sell_price * sell_quantity
+                profit_loss = sell_amount - position['buy_amount'] * (sell_quantity / position['quantity'])
+                
+                sell_record = self._create_sell_record(position, current_date, sell_price,
+                                                       sell_quantity, sell_amount, return_rate, hold_days, sell_type)
+                sell_records.append(sell_record)
+                logger.info(f"  【卖出】{stock_code}: 类型={sell_type}, 价格={sell_price}, "
+                           f"数量={sell_quantity}, 金额={sell_amount:.2f}, 收益率={return_rate:.2f}%")
+                
+            elif reduce_quantity > 0:
+                # 执行减仓（成交价用T+1开盘价）
+                reduce_amount = sell_price * reduce_quantity
+                remaining_quantity = position['quantity'] - reduce_quantity
+                remaining_ratio = remaining_quantity / position['quantity']
+                
+                reduce_record = self._create_sell_record(position, current_date, sell_price,
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                                                           reduce_quantity, reduce_amount, return_rate, hold_days, 'strategy_reduce')
                 sell_records.append(reduce_record)
                 
@@ -2249,11 +4584,32 @@ class BacktestEngine:
                             self.loss_cool_down_pool[stock_code] = cool_down_end
                             logger.warning(f"  股票 {stock_code} 连续亏损 {current_count} 次，加入冷却池至 {cool_down_end}")
             
+<<<<<<< HEAD
             # 检查是否触发亏损冷却期（单笔亏损超阈值）
             elif enable_loss_cool_down and return_rate <= cool_down_threshold:
                 cool_down_end = self._get_future_trading_day(current_date, cool_down_days)
                 self.loss_cool_down_pool[stock_code] = cool_down_end
                 logger.warning(f"  股票 {stock_code} 单笔亏损 {return_rate:.2f}% 超过阈值 {cool_down_threshold}%，加入冷却池至 {cool_down_end}")
+=======
+            # 检查是否触发冷却期（2026-09-16 新规则：**任意清仓卖出**即冷却 1 个月，盈利同样冷却）
+            # 与实盘一致：使用【独立 if】。原为 elif，因上方 enable_consecutive_loss_limit
+            # 默认为 True，该分支永远不会执行，导致回测单笔亏损冷却完全失效。
+            # 判定统一走 should_register_sell_cool_down（回测/实盘共用，防口径漂移）；
+            # 且**不覆盖更长的冷却**——否则会用 21 天覆盖上面刚设置的 250 天连续亏损冷却
+            # （与实盘 _check_cool_down 守卫一致）。
+            _sell_trade_type = sell_record.get('trade_type', 'sell')
+            if enable_loss_cool_down and should_register_sell_cool_down(
+                    _sell_trade_type, return_rate, cool_down_threshold,
+                    config.get('cool_down_on_any_sell', True)):
+                if not self._check_cool_down(stock_code, current_date):
+                    cool_down_end = self._get_future_trading_day(current_date, cool_down_days)
+                    self.loss_cool_down_pool[stock_code] = cool_down_end
+                    logger.warning(
+                        f"  股票 {stock_code} "
+                        f"{'清仓' if _sell_trade_type == 'sell' else '减仓'}卖出"
+                        f"（收益 {return_rate:.2f}%），"
+                        f"加入冷却池 {cool_down_days} 个交易日至 {cool_down_end}")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         return remaining_positions, sell_records
     
@@ -2433,13 +4789,30 @@ class BacktestEngine:
             }
         
         # 计算基本指标
+        # 【2026-09-22 口径修正】空值安全 ✓
+        #   `t.get('return_rate', 0)` 在"**键存在但值为 None**"时返回 None ✗（默认值只在缺键时生效 ✗）
+        #   → `None > 0` 直接抛 TypeError ✗，整张回测报表会算不出来 ✗（冒烟测试已复现 ✓）
+        def _ret(t):
+            v = t.get('return_rate')
+            return float(v) if v is not None else 0.0
+
         total_trades = len(completed_trades)
+<<<<<<< HEAD
         win_trades = sum(1 for t in completed_trades if t.get('return_rate', 0) > 0)
         loss_trades = sum(1 for t in completed_trades if t.get('return_rate', 0) < 0)
+=======
+        win_trades = sum(1 for t in completed_trades if _ret(t) > 0)
+        loss_trades = sum(1 for t in completed_trades if _ret(t) < 0)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         win_rate = (win_trades / total_trades) * 100 if total_trades > 0 else 0
         
-        returns = [t['return_rate'] for t in completed_trades]
-        avg_return = np.mean(returns) if returns else 0
+        # 【2026-09-22 口径修正】单笔收益率序列：**只取有效数值** ✓
+        #   原实现 `t['return_rate']` 直接取值 ✗ —— 已完成交易若缺该键会抛 KeyError ✗，
+        #   若为 None 则污染 mean ✗（avg_return / max_return / min_return 同源 ✓）
+        #   口径：已完成交易（含期末虚拟平仓）的**单笔收益率算术平均**，单位 % ✓
+        returns = [float(t['return_rate']) for t in completed_trades
+                   if t.get('return_rate') is not None]
+        avg_return = float(np.mean(returns)) if returns else 0.0
         total_return = ((final_capital / initial_capital) - 1) * 100
         total_return = round(total_return, 2)
         
@@ -2447,12 +4820,40 @@ class BacktestEngine:
         max_return = max(returns) if returns else 0
         min_return = min(returns) if returns else 0
         
+<<<<<<< HEAD
         # 计算盈利因子
         winning_returns = [t['return_rate'] for t in completed_trades if t.get('return_rate', 0) > 0]
         losing_returns = [abs(t['return_rate']) for t in completed_trades if t.get('return_rate', 0) < 0]
         total_win = sum(winning_returns) if winning_returns else 0
         total_loss = sum(losing_returns) if losing_returns else 1
         profit_factor = total_win / total_loss if total_loss > 0 else 0
+=======
+        # 【2026-09-22 口径修正】计算盈利因子 → 改为**金额口径** ✓
+        #   行业标准定义：盈利因子 = 总盈利金额 / 总亏损金额（Gross Profit / Gross Loss）✓
+        #   原实现用**单笔收益率(%)** 求和 ✗ → 每笔等权、完全无视仓位大小 ✗
+        #   （实测样本 #185：旧值 1.77 ✗ vs 金额口径 2.45 ✓，偏差 38% ✗）
+        #   同时修掉"无亏损时把分母兜底为 1" ✗ → 旧实现会算出"总盈利百分比"这种
+        #   无意义数值（如 250.3）✗；现：无亏损但有盈利 → 取上限哨兵 99.99 ✓，无盈利 → 0 ✓
+        amounts = [float(t.get('profit_loss') or 0) for t in completed_trades]
+        gross_profit = sum(a for a in amounts if a > 0)
+        gross_loss = abs(sum(a for a in amounts if a < 0))
+        if gross_loss > 0:
+            profit_factor = gross_profit / gross_loss
+        else:
+            profit_factor = PROFIT_FACTOR_NO_LOSS_CAP if gross_profit > 0 else 0.0
+        
+        # 计算盈亏比（基于金额）
+        # 【2026-09-22】同为空值问题：`t.get('profit_loss', 0)` 遇到值为 None 会抛 TypeError ✗
+        #   （金额取值的兜底一并做掉 ✓；注意下方 `else 1` 的分母兜底属另一处口径问题 ✗，
+        #     本次**未改**以免在未回填的情况下静默改动"盈亏比"数值 ✗，已在报告中列出 ✓）
+        winning_profits = [float(t.get('profit_loss') or 0) for t in completed_trades
+                           if (t.get('profit_loss') or 0) > 0]
+        losing_losses = [abs(float(t.get('profit_loss') or 0)) for t in completed_trades
+                         if (t.get('profit_loss') or 0) < 0]
+        avg_win = sum(winning_profits) / len(winning_profits) if winning_profits else 0
+        avg_loss = sum(losing_losses) / len(losing_losses) if losing_losses else 1
+        profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 计算盈亏比（基于金额）
         winning_profits = [t['profit_loss'] for t in completed_trades if t.get('profit_loss', 0) > 0]
@@ -2483,9 +4884,19 @@ class BacktestEngine:
         downside_volatility = np.std(downside_returns, ddof=1) if len(downside_returns) > 1 else 0
         sortino_ratio = np.mean(excess_returns) / downside_volatility * np.sqrt(252) if downside_volatility > 0 else 0.0
         
+<<<<<<< HEAD
         # 计算平均持有天数
         hold_days_list = [t['hold_days'] for t in completed_trades if 'hold_days' in t]
         avg_hold_days = np.mean(hold_days_list) if hold_days_list else 0.0
+=======
+        # 【2026-09-22 口径修正】计算平均持有天数 ✓
+        #   口径：已平仓交易的**平均持有交易日**数（买入当日记 0 天 ✓，与 positions 展示同口径 ✓）
+        #   原实现 `if 'hold_days' in t` ✗ —— 键存在但值为 None 时仍会进均值 ✗ → 均值变 nan ✗，
+        #   落库后前端显示 nan/异常 ✗（与 avg_return 同类问题 ✓）
+        hold_days_list = [float(t['hold_days']) for t in completed_trades
+                          if t.get('hold_days') is not None]
+        avg_hold_days = float(np.mean(hold_days_list)) if hold_days_list else 0.0
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         return {
             'total_trades': total_trades,

@@ -111,11 +111,17 @@ class DataInitializer:
                 logger.info(f"基础数据保存完成: 成功 {success_count} 只, 失败 {failed_count} 只")
         
         except Exception as e:
-            logger.error(f"初始化基础数据失败: {e}")
+            # ★【2026-10-07 用户要求 ✓】**无权限 ⇒ 跳过** ✗→✓（不要表现为"故障 ✗"）
+            from utils.online_guard import is_permission_error
+            if is_permission_error(e):
+                logger.warning(f"⏭ 跳过基础数据初始化：**数据源无权限** ✗（不中断 ✓）: {e}")
+            else:
+                logger.error(f"初始化基础数据失败: {e}")
     
     # ==================== K线数据初始化 ====================
     
     def _init_kline_history_data(self, stock_codes: list, years: int = 3,
+<<<<<<< HEAD
                                   progress_range: tuple = (0, 100)) -> None:
         """
         初始化K线历史数据（TickFlow 优先，智能降级 + 自动恢复）
@@ -133,12 +139,91 @@ class DataInitializer:
             progress_range: 进度映射区间 (start, end)，默认 (0, 100)
         """
         import time as time_module
+=======
+                                 progress_range: tuple = (0, 100),
+                                 skip_kline: bool = False) -> None:
+        """
+        初始化K线历史数据
+
+        策略：
+        - 已有 K 线数据：委派给 KlineUpdater 执行增量更新（与日常更新流程一致）
+        - 无 K 线数据：TickFlow 优先全量拉取，智能降级 + 自动恢复
+
+        参数：
+            stock_codes: 股票代码列表
+            years: 获取数据的年份数（默认 3 年，仅全量模式使用）
+            progress_range: 进度映射区间 (start, end)，默认 (0, 100)
+            skip_kline: 【2026-09-24】跳过 K 线初始化 ✓（由上层全量更新统一处理 ✓）
+        """
+        import time as time_module
+        total = len(stock_codes)
+        progress_start, progress_end = progress_range
+
+        # ============ 检测是否已有 K 线数据 ============
+        has_existing_data = False
+        try:
+            result = self.db_manager.query_one("SELECT COUNT(*) as cnt FROM stock_kline")
+            has_existing_data = result and result.get('cnt', 0) > 0
+        except Exception:
+            has_existing_data = False
+
+        if has_existing_data:
+            # 【2026-09-24】上层任务稍后还会做**全量 K 线更新**（本次含 kline 类型 ✓）→
+            #   新股票的 K 线交由那一步统一拉取 ✓，这里直接跳过：
+            #     · 避免同一批股票（新股票）被更新两遍 ✗
+            #     · 避免"检测除权并重建历史数据"重复执行 ✗
+            #       （此前日志里除权检测出现两次的原因：8 只新股初始化 + 全量 5411 只 ✓）
+            if skip_kline:
+                logger.info("=" * 60)
+                logger.info(f"跳过新股票 K 线增量更新（将由本次任务的全量更新统一处理）| 股票: {total} 只")
+                logger.info("=" * 60)
+                self._report_progress(progress_end, "K线数据交由全量更新统一处理")
+                return
+            # 已有数据 → 委派给 KlineUpdater 增量更新（与日常更新流程一致）
+            logger.info("=" * 60)
+            logger.info(f"检测到已有K线数据，执行增量更新 | 股票: {total} 只")
+            logger.info("=" * 60)
+
+            # 查询最近更新日期作为增量基准
+            try:
+                last_date_result = self.db_manager.query_one(
+                    "SELECT MAX(date) as last_date FROM stock_kline"
+                )
+                last_update_date = (
+                    last_date_result.get('last_date')
+                    if last_date_result and last_date_result.get('last_date')
+                    else (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+                )
+            except Exception:
+                last_update_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+
+            target_date = datetime.now().strftime('%Y-%m-%d')
+            self._report_progress(progress_start, "正在增量更新K线数据...")
+
+            from utils.kline_updater import KlineUpdater
+            updater = KlineUpdater(self.db_manager, self.stock_data_fetcher)
+            result = updater.update_kline_data(
+                stock_codes=stock_codes,
+                last_update_date=last_update_date,
+                target_date=target_date,
+                batch_size=100
+            )
+
+            logger.info(f"K线增量更新完成: {result.get('message', '')}")
+            self._report_progress(progress_end, "K线数据更新完成")
+            return
+
+        # ============ 无数据 → 全量初始化 ============
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # batch_size: 每批处理的股票数，与日常更新对齐
         batch_size = 100
         # days: 将年份转换为交易日数，与 TickFlow batch API 参数对齐
         days = years * 250
+<<<<<<< HEAD
         total = len(stock_codes)
         progress_start, progress_end = progress_range
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         success_count = 0
         failed_count = 0
         total_inserted = 0
@@ -158,7 +243,11 @@ class DataInitializer:
         consecutive_empty_tencent = 0
 
         logger.info("=" * 60)
+<<<<<<< HEAD
         logger.info(f"K线初始化开始 | 股票: {total} 只 | 年份: {years}年 | 批次大小: {batch_size}")
+=======
+        logger.info(f"K线初始化开始（全量）| 股票: {total} 只 | 年份: {years}年 | 批次大小: {batch_size}")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         logger.info(f"数据源策略: TickFlow 优先(批间 3s 延迟) → TickFlow 失败重试(30s) → 腾讯财经降级(2线程)")
         logger.info(f"永久降级阈值: 连续 {TF_PERMANENT_THRESHOLD} 次 TickFlow 失败")
         logger.info("=" * 60)
@@ -455,7 +544,11 @@ class DataInitializer:
     
     def init_full_data(self, max_stocks: Optional[int] = None, years: int = 3,
                        incremental: bool = False, stock_dict: dict = None,
+<<<<<<< HEAD
                        stock_codes: list = None) -> None:
+=======
+                       stock_codes: list = None, skip_kline: bool = False) -> None:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """
         统一的初始化入口，支持全量和增量两种模式
         
@@ -465,6 +558,11 @@ class DataInitializer:
             incremental: 是否仅初始化新增股票（默认 False，全量初始化）
             stock_dict: 预获取的股票代码到名称的映射字典（可选，避免重复拉取）
             stock_codes: 直接传入股票代码列表（可选，跳过API拉取步骤）
+<<<<<<< HEAD
+=======
+            skip_kline: 【2026-09-24】是否**跳过 K 线历史数据初始化** ✓
+                        —— 上层（数据更新任务）稍后还会做全量 K 线更新时传 True ✓
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """
         mode = "增量" if incremental else "全量"
         logger.info(f"开始{mode}初始化数据...")
@@ -518,7 +616,12 @@ class DataInitializer:
             # 2. 初始化K线历史数据（内部会按批次回调）
             self._report_progress(stages[1], f"正在获取K线数据（{years}年）...")
             self._init_kline_history_data(stock_codes, years=years,
+<<<<<<< HEAD
                                           progress_range=(stages[1], stages[2]))
+=======
+                                          progress_range=(stages[1], stages[2]),
+                                          skip_kline=skip_kline)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             self._report_progress(stages[2], "K线数据初始化完成")
             
             # 3. 初始化行业数据
@@ -540,7 +643,29 @@ class DataInitializer:
             self._report_progress(stages[5], "正在初始化事件数据...")
             self._init_event_data(stock_codes)
             self._report_progress(stages[6], "事件数据初始化完成")
+<<<<<<< HEAD
             
+=======
+
+            # ---------- 【2026-09-27 §5.3 覆盖矩阵】收尾**必须补算 ADX** ✗✓ ----------
+            #   `_init_kline_history_data` 用 `INSERT OR REPLACE`(L343 ✓) —— **不写 `adx` 列** ✗
+            #   ⇒ 不补算则全表 `adx = NULL` ✗ ⇒ 回测闸门随后会**明确拒绝** ✗（不静默跑 ✓）
+            #   ⚠️ 必须放在**所有 K 线写入之后** ✓（否则又被写入方覆盖 ✗）
+            try:
+                from utils.stock_adx import ensure_column, update_codes
+                _adx_conn = self.db_manager.connect()
+                ensure_column(_adx_conn)                 # 全新库可能还没这一列 ✓（自愈 ✓）
+                _codes = [str(c) for c in (stock_codes or [])]
+                if not _codes:                           # 未传 ⇒ 以库内实际代码为准 ✓
+                    _codes = [str(r[0]) for r in _adx_conn.execute(
+                        'SELECT DISTINCT code FROM stock_kline')]
+                _adx = update_codes(_adx_conn, _codes)
+                logger.info(f"初始化 ADX 补算完成 ✓ {_adx['updated_rows']} 行 / "
+                            f"{_adx['codes']} 只（失败 {len(_adx['failed'])} 只 ✗）")
+            except Exception as _e:                      # 补算失败**不**影响初始化 ✓
+                logger.error(f"初始化 ADX 补算失败 ✗（初始化结果不受影响 ✓）: {_e}")
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             logger.info(f"{mode}初始化完成")
         
         except Exception as e:

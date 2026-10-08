@@ -7,6 +7,7 @@ from trading.timing_strategies import TimingStrategy, TimingResult
 from typing import Dict, Optional
 
 
+<<<<<<< HEAD
 def same_row(df: pd.DataFrame, row: pd.Series) -> pd.Series:
     """判断DataFrame中与给定Series相同的行"""
     return (df['date'] == row['date']) & (df['close'] == row['close'])
@@ -18,6 +19,8 @@ def prev_day_close(df: pd.DataFrame, current_idx: int) -> float:
     return 0.0
 
 
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 # 经典海龟配置（趋势跟踪，长周期）
 CLASSIC_PRESET = {
     'n_entry': 20,        # 入场通道：20日高点
@@ -29,6 +32,12 @@ CLASSIC_PRESET = {
 }
 
 # 短线海龟配置（短期趋势，快进快出）
+<<<<<<< HEAD
+=======
+# ★【2026-10-01 用户要求 ✓】"**改回 10/5/10**" ✓（先前曾试 12/6/12 ✓ 已回退 ✓）
+#   = `n_entry` 10 / `n_exit` 5 / `atr_period` 10 ✓；本预设是"无配置时的默认口径"✓，
+#   与 `config/strategy_params.yaml` ✓ 和 `TURTLE_DEFAULT_PARAMS` ✓ **三层同步** ✓
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 SHORT_TURTLE_PRESET = {
     'n_entry': 10,        # 入场通道：10日高点
     'n_exit': 5,          # 出场通道：5日低点
@@ -54,10 +63,26 @@ class TurtleStrategy(TimingStrategy):
     
     # 预设配置映射
     PRESETS = {
+<<<<<<< HEAD
         'classic': CLASSIC_PRESET,       # 经典海龟：20/10
         'short': SHORT_TURTLE_PRESET,    # 短线海龟：10/5
         'ultra_short': ULTRA_SHORT_PRESET,  # 超短海龟：6/3
     }
+=======
+        'classic': CLASSIC_PRESET,       # 经典海龟：20/10/20
+        'short': SHORT_TURTLE_PRESET,    # 短线海龟：**10/5/10**（2026-10-01 用户口径 ✓）
+        'ultra_short': ULTRA_SHORT_PRESET,  # 超短海龟：6/3/6
+    }
+
+    # 是否启用 MA20 趋势过滤（买入与加仓判断均受此开关控制）
+    # 低位海龟（LowTurtleStrategy）覆盖为 False：低位股常低于 MA20，
+    # 启用会把信号全部否决，故子类关闭该过滤，仅保留突破/上影线/阳线条件。
+    # 通过开关而非重写方法，保证子类自动继承父类的前视偏差修复与规则变更。
+    USE_MA_FILTER = True
+
+    # 买入信号文案标识（子类可覆盖，如低位海龟为"低位"），仅影响展示不影响判断
+    SIGNAL_LABEL = ''
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     
     def __init__(self, config):
         """初始化海归策略
@@ -68,8 +93,20 @@ class TurtleStrategy(TimingStrategy):
         super().__init__(config)
         
         # 应用预设配置（如果指定了preset）
+<<<<<<< HEAD
         preset_name = self.config.get('preset', 'short')  # 默认短线海龟
         preset = self.PRESETS.get(preset_name, CLASSIC_PRESET)
+=======
+        # 【2026-09-23】默认与兜底统一为 short（10/5/10）✓
+        #   原实现：默认值 short ✓ 但**未知 preset 名**回退 classic（20/10/20）✗ ——
+        #   `preset: custom` 这类非法值会静默变成"更宽的通道" ✗，与"默认 10/5/10"的预期不符 ✗。
+        preset_name = self.config.get('preset', 'short')  # 默认短线海龟（10/5/10）
+        preset = self.PRESETS.get(preset_name, SHORT_TURTLE_PRESET)
+        # 【2026-09-23】记录最终生效的预设名，供回测/实盘日志打印真实口径 ✓
+        #   （否则日志只能打印 config 里的原始 preset ✗ —— 精简后该键已不在配置中 ✗，
+        #     会显示 None ✗，让人误以为"参数没读到" ✗，实际走的是默认 short = 10/5/10 ✓）
+        self.preset_name = preset_name
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 从预设或直接配置中获取参数
         self.n_entry = self.config.get('n_entry', preset['n_entry'])    # 入场通道周期
@@ -80,11 +117,57 @@ class TurtleStrategy(TimingStrategy):
         self.exit_atr = self.config.get('exit_atr', preset['exit_atr'])        # 出场ATR止损倍数
         self.base_position_amount = self.config.get('base_position_amount', 20000)  # 底仓金额（元）
         self.use_fixed_amount = self.config.get('use_fixed_amount', True)  # 是否使用固定金额
+<<<<<<< HEAD
         
         # 向后兼容旧参数名
         self.n1 = self.n_entry   # 入场上线周期
         self.n2 = self.n_exit     # 出场下线周期
     
+=======
+
+        # 【2026-09-23 口径统一】加仓参数改为**读配置** ✓（原实现在 get_timing_result 里硬编码 ✗，
+        #   导致面板/配置文件改成任何值都不生效 ✗ —— 海龟plus 一直是读配置的 ✓，父子口径不一致 ✗）：
+        #     · add_profit_min：加仓盈利门槛（缺省 2% ✓，与海龟plus 同键同默认 ✓）
+        #     · max_additions ：加仓次数上限（正整数=上限；0=不设限；缺省/None/非法=4 ✓）
+        #   盈利基准恒为**实际持仓均价** `position['buy_price']` ✓
+        #   （回测引擎 :868-871 与实盘运行器 :3499-3500 在加仓后都会把它更新为加权均价 ✓）
+        self.add_profit_min = self._to_float(self.config.get('add_profit_min'), 0.02)
+        self.max_additions = self._parse_max_additions(self.config.get('max_additions'))
+
+        # 向后兼容旧参数名
+        self.n1 = self.n_entry   # 入场上线周期
+        self.n2 = self.n_exit     # 出场下线周期
+
+    @staticmethod
+    def _to_float(value, default: float) -> float:
+        """安全转 float ✓（None / 空白串 / 非法值 → default ✓）"""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_max_additions(value) -> Optional[int]:
+        """解析加仓次数上限（**海龟 / 低位海龟 / 海龟plus 共用同一实现** ✓）
+
+        - 正整数          → 该上限
+        - 0              → None（不设限，交由引擎/上层约束）
+        - 缺省/None/''/非法 → **4（与海龟plus 一致）**
+
+        Returns:
+            上限次数；None 表示不设限
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return 4
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return 4
+        return n if n > 0 else None
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算海归策略所需指标
         
@@ -141,12 +224,22 @@ class TurtleStrategy(TimingStrategy):
         # 2. 上影线过滤：上影线不超过4%
         # 上影线 = high - max(open, close)，相对于实体上端计算
         # 这样对阳线和阴线都适用
+<<<<<<< HEAD
         upper_shadow = signal_bar['high'] - max(signal_bar['open'], signal_bar['close'])
         upper_shadow_ratio = upper_shadow / max(signal_bar['open'], signal_bar['close'])
+=======
+        # 上影线过滤：分母为实体上端 max(open, close)；
+        # 异常数据下该值可能为 0，此时按 0 处理避免 ZeroDivisionError
+        # （与加仓分支的保护口径保持一致）
+        _body_high = max(signal_bar['open'], signal_bar['close'])
+        upper_shadow = signal_bar['high'] - _body_high
+        upper_shadow_ratio = upper_shadow / _body_high if _body_high > 0 else 0
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         if upper_shadow_ratio > 0.04:
             return False
         
         # 3. 阳线过滤：信号发出当日必须是阳线且收盘涨幅 > 0%
+<<<<<<< HEAD
         # 回测模式（T-1日信号）：检查T-1日是否是阳线且收盘涨幅>0%
         # 狩猎场模式（T日信号，收盘后）：检查T日是否是阳线且收盘涨幅>0%
         # 找到signal_bar在df中的实际位置
@@ -184,6 +277,28 @@ class TurtleStrategy(TimingStrategy):
         ma_filter = pd.notna(latest['ma20']) and bool(latest['close'] > latest['ma20'])
         if not ma_filter:
             return False
+=======
+        # signal_bar 的位置由 use_prev_day_signal 确定：
+        #   回测模式（True）：signal_bar = df.iloc[-2]，前一天 = df.iloc[-3]
+        #   狩猎场模式（False）：signal_bar = df.iloc[-1]，前一天 = df.iloc[-2]
+        signal_bar_idx = len(df) - 2 if use_prev_day_signal else len(df) - 1
+        prev_close_idx = signal_bar_idx - 1
+        if prev_close_idx >= 0:
+            prev_close = df['close'].iloc[prev_close_idx]
+            is_bullish = bool(signal_bar['close'] > signal_bar['open'])  # 阳线
+            is_rising = bool(signal_bar['close'] > prev_close)  # 收盘涨幅>0
+            if not (is_bullish and is_rising):
+                return False
+        
+        # 4. 均线过滤：价格在均线上方才做多（受 USE_MA_FILTER 开关控制）
+        # 回测模式（T-1日信号）：用T-1日的ma20和close判断，避免前视偏差
+        # 狩猎场模式（T日信号）：signal_bar=latest，自然用T日数据
+        # 低位海龟关闭此过滤（低位股常低于MA20，启用会否决所有信号）
+        if self.USE_MA_FILTER:
+            ma_filter = pd.notna(signal_bar['ma20']) and bool(signal_bar['close'] > signal_bar['ma20'])
+            if not ma_filter:
+                return False
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         return True
     
@@ -202,6 +317,7 @@ class TurtleStrategy(TimingStrategy):
             (是否卖出, 卖出原因)
         """
         # 出场条件1：跌破N日低点（下线）
+<<<<<<< HEAD
         # 回测模式：最新K线跌破T-1信号的down
         # 狩猎场模式：最新K线跌破T日down（收盘后确认）
         if pd.notna(latest['down']) and bool(latest['low'] < latest['down']):
@@ -211,12 +327,28 @@ class TurtleStrategy(TimingStrategy):
         if pd.notna(latest['atr']):
             stop_loss = entry_price - self.exit_atr * latest['atr']
             if bool(latest['low'] <= stop_loss):
+=======
+        # 回测模式：用T-1日信号K线的low和down判断，避免前视偏差
+        # 狩猎场模式：signal_bar=latest，自然用T日数据
+        if pd.notna(signal_bar['down']) and bool(signal_bar['low'] < signal_bar['down']):
+            return True, f"跌破{self.n_exit}日低点 {signal_bar['down']:.2f}"
+        
+        # 出场条件2：ATR止损（跌破入场价 - exit_atr * ATR）
+        # 回测模式：用T-1日信号K线的atr和low判断
+        if pd.notna(signal_bar['atr']):
+            stop_loss = entry_price - self.exit_atr * signal_bar['atr']
+            if bool(signal_bar['low'] <= stop_loss):
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 return True, f"ATR止损 {stop_loss:.2f}"
         
         return False, ""
     
     def get_timing_result(self, df: pd.DataFrame, position: Optional[Dict] = None, 
+<<<<<<< HEAD
                           cash: Optional[float] = None, use_prev_day_signal: bool = True) -> TimingResult:
+=======
+                          cash: Optional[float] = None, use_prev_day_signal: bool = True, stock_code: str = "") -> TimingResult:
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """获取海归策略择时结果
         
         Args:
@@ -226,6 +358,10 @@ class TurtleStrategy(TimingStrategy):
             use_prev_day_signal: 是否使用前一天信号
                 - True: 回测模式，使用T-1日信号判断（df.iloc[-2]作为信号K线）
                 - False: 狩猎场模式，使用T日信号判断（df.iloc[-1]作为信号K线）
+<<<<<<< HEAD
+=======
+            stock_code: 股票代码（用于指标缓存隔离）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
         Returns:
             择时结果
@@ -269,10 +405,25 @@ class TurtleStrategy(TimingStrategy):
         if not position and not result.is_sell:
             if len(df) >= 2:
                 if self._check_buy_signal(df, signal_bar, latest, use_prev_day_signal):
+<<<<<<< HEAD
                     buy_price = latest['open']
                     result.is_buy = True
                     result.signal_strength = 1.0
                     result.message = f"T-{signal_date_offset}日突破上线 {signal_bar['up']:.2f}，买入信号" if signal_date_offset else f"今日突破上线 {signal_bar['up']:.2f}，买入信号"
+=======
+                    # 买入价测算口径：
+                    # - 回测模式（T-1信号）：信号次日开盘成交，用 T 日开盘价（真实执行价）
+                    # - 实盘模式（T日信号）：收盘后才确认信号、T+1 执行，
+                    #   用 T 日开盘价属于"回到过去"的时点，以 T 日收盘价测算更贴合实际成交
+                    buy_price = latest['open'] if use_prev_day_signal else latest['close']
+                    result.is_buy = True
+                    result.signal_strength = 1.0
+                    # 文案含 SIGNAL_LABEL，子类（如低位海龟）可标识来源
+                    result.message = (
+                        f"T-{signal_date_offset}日突破上线 {signal_bar['up']:.2f}，"
+                        f"{self.SIGNAL_LABEL}买入信号") if signal_date_offset else (
+                        f"今日突破上线 {signal_bar['up']:.2f}，{self.SIGNAL_LABEL}买入信号")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     result.support_level = signal_bar['up'] * 0.95
                     result.trade_type = 'buy'
                     buy_amount = self.base_position_amount
@@ -284,6 +435,7 @@ class TurtleStrategy(TimingStrategy):
             current_quantity = position.get('quantity', 0)
             add_count = position.get('add_count', 0)  # 已加仓次数
 
+<<<<<<< HEAD
             # 海龟法则：最多加仓4次
             max_additions = 4
 
@@ -309,16 +461,68 @@ class TurtleStrategy(TimingStrategy):
                         # 检查上影线
                         upper_shadow = latest['high'] - max(latest['open'], latest['close'])
                         upper_shadow_ratio = upper_shadow / max(latest['open'], latest['close']) if max(latest['open'], latest['close']) > 0 else 0
+=======
+            # 加仓条件：价格上涨add_atr*ATR（每次加仓后更新参考价）
+            # 首次加仓：以入场价为基准；后续加仓：以上次加仓价为基准
+            # 加仓也需要阳线条件（与买入一致）
+            # 前视偏差修复：所有信号判断用signal_bar（回测=T-1日，狩猎场=T日）
+            #
+            # 【2026-09-23 口径统一】两处硬编码改为**读配置** ✓：
+            #   ① 加仓上限：`max_additions = 4` ✗ → `self.max_additions` ✓
+            #      （正整数=上限；0=不设限；缺省/非法=4 ✓，与海龟plus 同一解析器 ✓）
+            #   ② 盈利门槛：`profit_ratio > 0.02` ✗ → `>= self.add_profit_min` ✓（缺省 0.02 ✓）
+            #      · 口径 = **实际盈利** ✓：基准恒为 `entry_price = position['buy_price']`
+            #        （**持仓加权均价** ✓，回测/实盘加仓后均会更新 ✓），与海龟plus 一致 ✓
+            #      · 边界由 `>` 统一为 `>=` ✓（恰好等于门槛时两策略结论一致 ✓）
+            max_additions = self.max_additions
+            if max_additions is None or add_count < max_additions:
+                # 检查持仓盈利状态（按**实际持仓均价**衡量 ✓），用信号日收盘价
+                signal_close = signal_bar['close']
+                profit_ratio = (signal_close - entry_price) / entry_price if entry_price > 0 else 0
+                if profit_ratio >= self.add_profit_min:  # 盈利达门槛（可配置 ✓）
+                    # last_add_price 可能为空(None/0)：首次加仓以入场价为基准，
+                    # 故缺失时回退 entry_price（避免 None + float 抛 TypeError）
+                    last_add_price = position.get('last_add_price') or entry_price
+                    add_threshold = last_add_price + self.add_atr * signal_bar['atr']
+
+                    if signal_bar['high'] >= add_threshold:
+                        # 检查阳线条件：加仓也需要阳线且涨幅>0，与买入规则一致
+                        # 前一日收盘价：信号日的前一天
+                        signal_bar_idx = len(df) - 1 - signal_date_offset
+                        prev_close = df['close'].iloc[signal_bar_idx - 1] if signal_bar_idx > 0 else signal_close
+                        is_bullish = signal_bar['close'] > signal_bar['open']
+                        is_rising = signal_bar['close'] > prev_close
+                        # 均线过滤：低位海龟通过 USE_MA_FILTER=False 关闭，此时恒为 True
+                        is_above_ma20 = (
+                            (pd.notna(signal_bar['ma20']) and signal_bar['close'] > signal_bar['ma20'])
+                            if self.USE_MA_FILTER else True)
+
+                        # 检查上影线
+                        upper_shadow = signal_bar['high'] - max(signal_bar['open'], signal_bar['close'])
+                        upper_shadow_ratio = upper_shadow / max(signal_bar['open'], signal_bar['close']) if max(signal_bar['open'], signal_bar['close']) > 0 else 0
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                         upper_shadow_ok = upper_shadow_ratio <= 0.04
 
                         # 阳线 + 涨幅>0 + 上影线<4% + 均线过滤
                         if is_bullish and is_rising and upper_shadow_ok and is_above_ma20:
                             result.is_buy = True
                             result.signal_strength = 0.8
+<<<<<<< HEAD
                             result.message = f"加仓#{add_count + 1}，突破{add_threshold:.2f}"
                             result.trade_type = 'add'
                             result.add_count = add_count + 1
                             result.indicators['last_add_price'] = latest['close']
+=======
+                            result.message = (
+                                f"加仓#{add_count + 1}，突破{add_threshold:.2f}"
+                                f"（持仓均价 {entry_price:.2f}，盈利 {profit_ratio * 100:.1f}%）")
+                            result.trade_type = 'add'
+                            result.add_count = add_count + 1
+                            result.indicators['last_add_price'] = signal_bar['close']
+                            # 【2026-09-23】回填盈利口径（与海龟plus 同名同义 ✓，便于排查）
+                            result.indicators['add_ref_price'] = entry_price
+                            result.indicators['add_ref_label'] = '持仓均价'
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                             # 以持仓数量为基准，加仓比例递减：1/2, 1/3, 1/4, 1/5, 1/6
                             add_ratio = 1.0 / (add_count + 2)
                             add_quantity = int(current_quantity * add_ratio) // 100 * 100

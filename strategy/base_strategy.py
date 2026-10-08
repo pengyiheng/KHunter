@@ -32,7 +32,14 @@ class BaseStrategy(ABC):
     
     def _validate_data(self, df) -> bool:
         """
+<<<<<<< HEAD
         通用数据验证：检查数据完整性、长度、是否为已退市股票和ST股票
+=======
+        通用数据验证：检查数据完整性和长度
+        
+        注意：退市/停牌检查已统一移到 _is_suspended，通过当日K线有无来判断，
+        无需逐只调用 Tushare API，且能同时覆盖退市和停牌两种情况。
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         :param df: 股票数据DataFrame（倒序，最新在前）
         :return: True表示数据有效，False表示数据无效
@@ -50,6 +57,7 @@ class BaseStrategy(ABC):
             if field not in df.columns:
                 return False
         
+<<<<<<< HEAD
         # 检查是否为已退市股票：最新数据日期距今超过5年
         # df是倒序的，最新数据在第一行
         try:
@@ -64,6 +72,8 @@ class BaseStrategy(ABC):
         except Exception:
             pass
         
+=======
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return True
     
     def _is_suspended(self, df, selection_date):
@@ -127,7 +137,6 @@ class BaseStrategy(ABC):
         :return: 选股信号列表，每个元素为字典包含信号详情
         """
         pass
-    
     def get_selection_criteria(self):
         """
         获取选股条件描述
@@ -140,8 +149,13 @@ class BaseStrategy(ABC):
         标准化的选股执行过程
 
         执行流程：
+<<<<<<< HEAD
             1. 数据验证（包括检查已退市股票）
             2. 停牌股检查（当天没有K线数据的股票被过滤）
+=======
+            1. 数据验证（完整性、长度、必要字段）
+            2. 当日K线检查（退市/停牌股票一并过滤，无Tushare API调用）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             3. 快速过滤（优先使用带lookback的版本）
             4. 计算指标
             5-N. 选股条件检查
@@ -149,6 +163,7 @@ class BaseStrategy(ABC):
         :param df: 股票数据DataFrame（倒序，最新在前）
         :param stock_code: 股票代码
         :param stock_name: 股票名称
+<<<<<<< HEAD
         :param selection_date: 选股日期（YYYY-MM-DD格式），如果为None则使用今天
         :return: 选股信号列表
         """
@@ -158,6 +173,25 @@ class BaseStrategy(ABC):
         # 停牌股检查已禁用 - 暂时跳过此检查以避免非交易日无法选股
         # if selection_date and self._is_suspended(df, selection_date):
         #     return []
+=======
+        :param selection_date: 选股日期（YYYY-MM-DD格式），如果为None则跳过当日K线检查
+        :return: 选股信号列表
+        """
+        # 统一规范化排序：策略内部（_is_suspended/_near_run/_check_low_env/状态机）均假设
+        # "倒序、最新在前"（idx0=最新）。前端 web_server 经 read_all_stocks_kline 传入升序数据，
+        # 若此处不反转，_is_suspended 会把最新日期误判为最早日期而误杀全部股票（导致 0 命中）。
+        # 命令行路径传入的为降序，此反转对其为 no-op，不影响原有行为。
+        if len(df) >= 2 and str(df['date'].iloc[0]) < str(df['date'].iloc[-1]):
+            df = df.iloc[::-1].reset_index(drop=True)
+
+        if not self._validate_data(df):
+            return []
+
+        # 检查当日是否有K线数据（退市/停牌股票一并过滤）
+        # selection_date 为 None 时跳过，避免非交易日（周末/节假日）误判
+        if selection_date and self._is_suspended(df, selection_date):
+            return []
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         if hasattr(self, '_quick_filter_with_lookback'):
             if not self._quick_filter_with_lookback(df):
@@ -178,20 +212,45 @@ class BaseStrategy(ABC):
                     if hasattr(self, '_get_previous_date_with_kline_data'):
                         selection_date = self._get_previous_date_with_kline_data(selection_date)
 
+<<<<<<< HEAD
+=======
+        # 透传 selection_date 给选股核心：仅当子类的 select_stocks 声明了该参数，
+        # 避免破坏未使用 selection_date 的其他策略。龙头策略据此按 selection_date 查涨停池，
+        # 不再依赖"DataFrame 降序首行即选股日"的隐式假设（回测/策略运行器路径同样受益）。
+        try:
+            import inspect
+            sig_params = inspect.signature(self.select_stocks).parameters
+            # 构建 select_stocks 的可选参数（仅当子类声明了对应参数时才传入）
+            select_kwargs = {}
+            if 'selection_date' in sig_params:
+                select_kwargs['selection_date'] = selection_date
+            if 'stock_code' in sig_params:
+                select_kwargs['stock_code'] = stock_code
+            if select_kwargs:
+                return self.select_stocks(df, stock_name, **select_kwargs)
+        except (ValueError, TypeError):
+            pass
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return self.select_stocks(df, stock_name)
     
-    def analyze_stock(self, stock_code, stock_name, df):
+    def analyze_stock(self, stock_code, stock_name, df, selection_date=None):
         """
         分析单只股票 - 专注于流程处理
         
         :param stock_code: 股票代码
         :param stock_name: 股票名称
         :param df: 股票数据DataFrame
+        :param selection_date: 选股日期，用于当日K线检查（退市/停牌过滤）
         :return: 标准化的选股结果或None
         """
         try:
+<<<<<<< HEAD
             # 使用标准化的选股执行过程
             signals = self.execute_selection(df, stock_code, stock_name)
+=======
+            # 使用标准化的选股执行过程，传入 selection_date 以启用当日K线检查
+            signals = self.execute_selection(df, stock_code, stock_name, selection_date=selection_date)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             # 结果过滤和标准化
             if signals:

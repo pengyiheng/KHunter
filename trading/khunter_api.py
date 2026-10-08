@@ -408,7 +408,16 @@ class KHunterAPI:
     # ==================== 私有方法 - 参数验证 ====================
     
     # 合法的择时策略列表
+<<<<<<< HEAD
     VALID_TIMING_STRATEGIES = ['support', 'turtle', 'rsi', 'bollinger', 'macd_bollinger']
+=======
+    # 【2026-09-21】补入 uptrend_pullback ✓
+    #   背景：它是**引擎已在用**的合法择时策略（见 config/regime_router.yaml ✓
+    #   与历史批量回测结果 ✓），但此白名单遗漏了它 ✗ →
+    #   狩猎场计算被 400 拒绝：'无效的择时策略: uptrend_pullback' ✗
+    VALID_TIMING_STRATEGIES = ['support', 'turtle', 'low_turtle', 'turtle_plus', 'rsi',
+                               'bollinger', 'macd_bollinger', 'uptrend_pullback']
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     
     def _validate_timing_strategy(self, timing_strategy: str) -> None:
         """

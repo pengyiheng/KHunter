@@ -2,6 +2,12 @@
  * 选股相关功能模块
  */
 
+// ★【2026-10-04 用户要求 ✓】**全站前端统一版本号** ✗→✓
+//   从自身 URL 取出 `?v=NN` ✓（源头 = `index.html` 的 `app.js?v=NN` ✓）
+//   ⇒ 此前写死的 `?v=2` ✗ 已废除 ✓。
+const V = new URL(import.meta.url).search;
+const imp = (p) => import(p + V);
+
 // 缓存最近一次选股结果，用于手动保存
 let lastSelectionResults = null;
 let lastSelectionTime = null;
@@ -141,7 +147,7 @@ export async function executeSelectionWithStrategies(strategies, logic = 'or', s
     indicator.innerHTML = '<span class="dot yellow"></span> 运行中';
     
     // 切换到选股结果页
-    import('./navigation.js').then(module => module.switchPage('selection'));
+    imp('./navigation.js').then(module => module.switchPage('selection'));
     document.getElementById('selection-results').innerHTML = '<p class="loading">正在执行选股策略，请稍候...</p>';
     
     console.log('选股请求开始', { strategies, logic, selectionDate });
@@ -648,6 +654,15 @@ export function renderSelectionResults(results, time, filterStats, strategyDispl
                 // 按策略分组显示
                 for (const [strategyName, stocks] of Object.entries(stocksByStrategy)) {
                     if (stocks.length > 0) {
+                        // 超跌反弹策略：按跌幅(decline_pct)降序排列，跌幅高在前
+                        if (strategyName === '超跌反弹策略' || strategyName === '超跌反弹') {
+                            stocks.sort((a, b) => {
+                                const da = (a.signals && a.signals[0] && a.signals[0].decline_pct) || -1;
+                                const db = (b.signals && b.signals[0] && b.signals[0].decline_pct) || -1;
+                                return db - da;
+                            });
+                        }
+                        const isOversold = (strategyName === '超跌反弹策略' || strategyName === '超跌反弹');
                         totalCount += stocks.length;
                         html += '<div class="selection-strategy"><h4>' + strategyName + ' (' + stocks.length + '只)</h4>';
                         
@@ -663,8 +678,12 @@ export function renderSelectionResults(results, time, filterStats, strategyDispl
                             const strategiesStr = signal.strategy_display_names && Array.isArray(signal.strategy_display_names) ? signal.strategy_display_names.join(' + ') : '';
                             const reasons = s.reasons && Array.isArray(s.reasons) ? s.reasons.map(r => '<span class="tag">' + r + '</span>').join('') : '';
                             
+                            // 超跌反弹策略展示跌幅标签
+                            const declineTag = (isOversold && s.decline_pct != null) ?
+                                '<span class="tag">跌幅: ' + s.decline_pct + '%</span>' : '';
+
                             const keyDate = s.key_date ? '<span class="tag">' + s.key_date_type + ': ' + s.key_date + '</span>' : '';
-                            return '<div class="signal-card"><div class="signal-header"><span class="signal-title"><a href="javascript:void(0)" onclick="viewStockDetail(\'' + signal.code + '\')" class="stock-link">' + signal.code + ' ' + signal.name + '</a></span><div class="signal-tags"><span class="tag">' + strategiesStr + '</span>' + keyDate + reasons + '</div></div></div>';
+                            return '<div class="signal-card"><div class="signal-header"><span class="signal-title"><a href="javascript:void(0)" onclick="viewStockDetail(\'' + signal.code + '\')" class="stock-link">' + signal.code + ' ' + signal.name + '</a></span><div class="signal-tags"><span class="tag">' + strategiesStr + '</span>' + keyDate + declineTag + reasons + '</div></div></div>';
                         }).join('');
                         
                         html += '</div>';

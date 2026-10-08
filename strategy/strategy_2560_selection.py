@@ -34,7 +34,11 @@ class Strategy2560Selection(BaseStrategy):
             'vol_ma_short': 5,
             'vol_ma_long': 60,
             'min_price_change': 0.05,
+<<<<<<< HEAD
             'min_volume_ratio': 1.2,
+=======
+            'min_volume_ratio': 1.5,
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             'strategy_weight': 70,
         }
         if params:
@@ -110,7 +114,11 @@ class Strategy2560Selection(BaseStrategy):
         if not gain_condition:
             return []
 
+<<<<<<< HEAD
         # 条件5: 量能≥前5日均量的1.2倍
+=======
+        # 条件5: 量能≥前5日均量的 min_volume_ratio 倍（阈值由参数设置，不从代码写死字面量）
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         volume_ratio = latest['volume'] / latest['vol_ma5'] if latest['vol_ma5'] > 0 else 0
         volume_condition = volume_ratio >= self.params['min_volume_ratio']
         if not volume_condition:

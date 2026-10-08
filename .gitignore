@@ -25,7 +25,198 @@ Thumbs.db
 
 # Reports
 reports/
+<<<<<<< HEAD
+=======
+.kiro/
+# test/ 目录保留测试文件
+# doc/ 目录保留用于存放修复和文档，不忽略
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 # Env files
 .env
 .env.local
+<<<<<<< HEAD
+=======
+*.log
+
+# Configuration files (local)
+# 【2026-09-13】config/config.yaml 仍受版本管理（远端保留脱敏版，便于新克隆直接可用），
+# 但本地工作区版本含飞书 App Secret 等真实凭据 → 【禁止提交该文件】。
+# 已配置 .git/hooks/pre-commit 防护，误暂存时提交会被阻止。
+# 需要修改远端默认配置请改 config/config.yaml.template 并同步脱敏内容。
+config/tushare_config.json
+config/87659999.json
+config/87659999_decrypted.json
+
+# 备份文件
+*.bak
+
+# 媒体文件（产品介绍、演示视频等）
+*.mp4
+*.pptx
+
+# 根目录临时测试/验证脚本
+_*.py
+_*.txt
+check_*.py
+verify_*.py
+
+# 临时输出文件
+_tmp_*
+_verify_output*
+_output*.txt
+_step_reinit.py
+
+# 回测批次运行时文件（自动生成的临时批处理文件）
+data/backtest_batch/progress_batch_*
+data/backtest_batch/queue_batch_*
+data/backtest_batch/single_*
+data/backtest_batch/daily_*
+data/backtest_batch/reports_*
+data/backtest_batch/backtest_kline_*
+
+# 验证临时数据
+data/_verify_*
+
+# 自动生成的交易脚本
+trading/ptrade/test_khunter_auto_trade.py
+trading/strategy_runner_exdividend_fix.py
+
+# 运行时缓存
+data/risk_cache/
+data/trading_calendar_cache.json
+
+# running 目录的备份副本
+data/running - 副本*/
+
+# PPT 和演示文稿生成
+ppt/
+scripts/generate_ppt.py
+scripts/generate_video.py
+
+# 根目录一次性运行脚本
+quick_scan_*.py
+remove_*.py
+run_golden_*.py
+scan_*.py
+calc_temp_risk_*.py
+
+# 临时测试脚本（非正式测试）
+test/calc_temp_risk_*.py
+test/check_*.py
+test/verify_*.py
+
+# 文档中的自动生成文件
+doc/*.html
+doc/video/
+
+# running 目录的备份文件
+data/running/*.json.bak
+data/running/buy_candidate_pool*.json.bak*
+
+# running 目录运行时产出数据（每日生成，不纳入版本控制）
+data/running/daily_*.md
+data/running/portfolio_*.json
+data/running/signals_*.json
+data/running/trades_*.json
+data/running/task_history.json
+data/running/last_exdividend_date.json
+data/running/ptrade_feedback/
+data/running/KHunter*.md
+data/running/reduce_plan_cache.json
+data/running/reduce_plan_cache.json.lock
+
+# 根目录其他一次性脚本
+fix_*.py
+full_fix_*.py
+golden_triangle_*.csv
+
+# config 本地配置
+# ★★【2026-10-07 用户要求 ✓】**`config/backtest_engine_config.yaml` 改为**纳入版本管理** ✗→✓ ★★
+#   缘由 ✗✓：远端**缺这份"关键回测配置"** ✗ ⇒ 新克隆拿不到档位/阈值/开关 ✓
+#     （实测该文件**零敏感键、零绝对路径** ✓ ⇒ 可安全入库 ✓；
+#      ⚠️ 与 `config/config.yaml`（**含飞书凭据** ✗）**完全不同** ⇒ 那份**严禁提交** ✗ ✓）
+#   ⇒ 从本文件移除忽略规则 ✓（保持与仓库现状一致 ✓，避免"看着被忽略其实已跟踪"的误导 ✗）
+
+
+# running 运行时输出目录
+data/running/to_ptrade/
+
+# 测试用的音频/媒体文件
+data/test_tts*.mp3
+
+# 根目录更多一次性脚本
+delete_stocks.py
+detect_exdividend_*.py
+
+# ===== 2026-09-12 推送脱敏：远端仅保留源代码，以下运行数据/产物不再入库 =====
+# 说明：这些路径此前虽已写入本文件，但文件早已被跟踪，gitignore 对已跟踪文件无效；
+#       本次配合 git-filter-repo 清理历史后，新产生的文件将被正确忽略。
+# 运行数据（实时状态与批次产物）
+data/backtest_batch/
+data/running/
+data/performance/
+data/bk/
+data/hmm_model/
+data/*.sqlite
+# 测试/文档产物
+test/results/
+test/*.csv
+test/*.txt
+doc/*.csv
+# 本地推送备份目录（方案B执行用，成功后可删除）
+_push_backup/
+# 其他产物（2026-09-12 补充）
+.coverage
+*.sqlite-shm
+*.sqlite-wal
+*.bak_*
+tmp_*.py
+
+# ===== 2026-09-12 远端仅保留源码：以下内容已从版本历史剔除，不再跟踪 =====
+# 注意：文件仍保留在本地磁盘，只是不纳入版本管理、不会被推送。
+# 测试 / 文档 / 需求说明书
+test/
+doc/
+spec/
+# 本地辅助目录与发布包
+.trae/
+start.zip
+# 根目录一次性脚本（调试/查询/验证用，不入库）
+/debug_*.py
+/diagnose_*.py
+/find_*.py
+/query_*.py
+/list_*.py
+/reinit_*.py
+/restore_*.py
+/verify_*.py
+/test_*.py
+
+# ===== 2026-10-07 用户要求：根目录"一次性脚本 / 分析报告 / 过程文档"**不入库** ✗ =====
+#   缘由 ✓：它们是**开发过程产物**（一次性优化脚本、性能分析报告、代码审查报告 ✓），
+#     不属于"可运行源码" ✗ ⇒ 出现在仓库里会**误导使用者**（以为要跑它们 ✓）✗。
+#   ⚠️ 文件仍**保留在本地磁盘** ✓（只从版本管理移除 ✓，用 `git rm --cached` ✓）；
+#   ⚠️ 历史提交里**仍然存在** ✗（如需彻底抹除 ⇒ 需 `git filter-repo` + 强推 ⇒ 另行确认 ✓）。
+#   ⚠️ README/RELEASE_NOTES 里对它们的引用**已同步改掉** ✓（不留死链 ✗）。
+/优化数据库性能.sql
+/应用数据库优化.py
+/测试数据更新性能.py
+/补充历史K线数据.py
+/补充*.py
+/数据更新性能问题分析报告.md
+/数据更新性能问题补充分析.md
+/数据更新*.md
+/回测数据本地化_运维手册.md
+/回测数据本地化_需求与设计说明书.md
+/回测数据本地化_*.md
+/顺势宝策略代码审查报告.md
+/顺势宝*.md
+
+# ===== 2026-10-07 用户要求：根目录**只保留"入口/元文件 + 目录"**，与上一版本(1.6.0)对齐 =====
+#   `wsgi.py` / `start_prod.bat` 是**可选的生产启动入口** ✓（非运行必须 ✗：
+#   日常用 `start.bat` / `python main.py web` 即可 ✓）⇒ 移出版本管理 ✓、**本地保留** ✓。
+#   ⚠️ 如日后要恢复：`git checkout 1.7.0 -- wsgi.py start_prod.bat` ✓（历史里一直有 ✓）
+/wsgi.py
+/start_prod.bat
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e

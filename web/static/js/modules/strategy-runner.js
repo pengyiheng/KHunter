@@ -40,9 +40,14 @@ const StrategyRunnerModule = {
     initStrategyRunnerModule: async function() {
         await this.loadStrategyNames();
         this.setupEventListeners();
+<<<<<<< HEAD
         await this.loadStrategyRunnerPage();
         // 页面加载时自动加载持仓信息
         await this.loadPortfolio();
+=======
+        // loadStrategyRunnerPage 内部已完成所有数据加载（含 loadPortfolio）
+        await this.loadStrategyRunnerPage();
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     },
     
     // 设置事件监听器
@@ -279,16 +284,39 @@ const StrategyRunnerModule = {
         taskCount.textContent = this.tasks.length;
         startBtn.disabled = false;
         
+<<<<<<< HEAD
         taskBody.innerHTML = this.tasks.map((task, index) => `
             <tr>
                 <td>${index + 1}</td>
                 <td style="word-break:break-all;">${task.selection_strategy_display_name || task.selection_strategy}</td>
                 <td>${task.timing_strategy_display_name || task.timing_strategy}</td>
+=======
+        taskBody.innerHTML = this.tasks.map((task, index) => {
+            // 择时策略中文名称映射
+            const timingStrategyMap = {
+                'turtle': '海龟策略',
+                'low_turtle': '低位海龟策略',
+                'turtle_plus': '海龟plus',
+                'rsi': 'RSI策略',
+                'bollinger': '布林带策略',
+                'support': '支撑位策略',
+                'uptrend_pullback': '趋势回调缩量策略'
+            };
+            return `
+            <tr>
+                <td>${index + 1}</td>
+                <td style="word-break:break-all;">${task.selection_strategy_display_name || task.selection_strategy}</td>
+                <td>${timingStrategyMap[task.timing_strategy] || task.timing_strategy_display_name || task.timing_strategy}</td>
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 <td style="text-align:center;">
                     <button class="btn btn-sm btn-outline-danger remove-task-btn" data-index="${index}">删除</button>
                 </td>
             </tr>
+<<<<<<< HEAD
         `).join('');
+=======
+        `}).join('');
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     },
     
     // 检查策略运行器状态

@@ -292,7 +292,12 @@ class TradingPlanGenerator:
             'turtle': '海龟策略',
             'rsi': 'RSI策略',
             'bollinger': '布林带策略',
+<<<<<<< HEAD
             'support': '支撑位策略'
+=======
+            'support': '支撑位策略',
+            'uptrend_pullback': '趋势回调缩量策略'
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         }
         timing_strategy = stock_data.get('timing_strategy', '')
         timing_strategy_name = timing_strategy_display.get(timing_strategy, timing_strategy)

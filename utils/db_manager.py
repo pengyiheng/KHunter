@@ -432,7 +432,10 @@ class DBManager:
                 row = cursor.fetchone()
                 if row:
                     result = dict(row)
-                    logger.debug(f"单条数据查询成功")
+                    # 【2026-09-28 减噪 ✗→✓】原 `logger.debug("单条数据查询成功")` ✗ ——
+                    #   实测单日 **32,177 行** ✗（占全天 11% ✗，一次查询一行 ✗）
+                    #   且**零信息量** ✗（查不到会返回 None ✓，失败会抛错/走重试 ✗）
+                    #   ⇒ 整行删除 ✓（失败路径的 warning/error 一条都没动 ✓）。
                     return result
                 return None
             except sqlite3.OperationalError as e:
@@ -860,7 +863,49 @@ class DBManager:
             # 如果表不存在或查询失败，返回空列表
             logger.debug(f"列出所有股票失败: {str(e)}")
             return []
-    
+
+    def read_stock_batch(self, end_date: str, limit: int = 120) -> Dict[str, pd.DataFrame]:
+        """
+        批量读取全部股票截至 end_date 的最新 limit 根日线（单条SQL，避免逐只查询往返）
+
+        Args:
+            end_date: 截止日期（含），如 '2026-08-04'
+            limit: 每只股票最多返回的根数
+
+        Returns:
+            dict: {code: 倒序 DataFrame(最新在前, index0=最新)，列含 open/high/low/close/volume/date}
+        """
+        # 单条SQL取全部股票截至目标日的数据，按 code、date 降序排列
+        sql = ("SELECT code, date, open, high, low, close, volume "
+               "FROM stock_kline WHERE date <= ? ORDER BY code, date DESC")
+        big = self.query(sql, (end_date,))
+        if not big:
+            return {}
+        result: Dict[str, pd.DataFrame] = {}
+        cur_code = None
+        cur_rows = []
+        for row in big:
+            code = row['code']
+            if code != cur_code:
+                # 切换到新股票：把上一只的前 limit 根存入结果
+                if cur_code is not None:
+                    result[cur_code] = self._to_stock_df(cur_rows[:limit])
+                cur_code = code
+                cur_rows = []
+            cur_rows.append(row)
+        # 收尾最后一只
+        if cur_code is not None:
+            result[cur_code] = self._to_stock_df(cur_rows[:limit])
+        return result
+
+    @staticmethod
+    def _to_stock_df(rows) -> pd.DataFrame:
+        """将行列表转为倒序 DataFrame（index0=最新）"""
+        df = pd.DataFrame([dict(r) for r in rows])
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date', ascending=False).reset_index(drop=True)
+        return df
+
     def stock_exists(self, stock_code: str) -> bool:
         """
         检查股票数据是否存在（替代 CSVManager.stock_exists）
@@ -963,4 +1008,205 @@ class DBManager:
             return stock_names
         except Exception as e:
             logger.debug(f"获取所有股票名称失败: {str(e)}")
+            return {}
+
+    def get_active_stock_codes(self, target_date: str, lookback_days: int = 0) -> set:
+        """
+        批量获取指定日期(或向前回看窗口)有K线数据的股票代码集合（一次SQL替代逐个检查）
+
+        用于退市/停牌过滤：选股日无K线的股票会被排除在结果集外。
+        lookback_days 用于解除对"当日"K线的强依赖——当当日K线尚未入库
+        (盘后数据延迟)时，向前回看若干交易日，只要窗口内有K线即视为活跃，
+        避免预加载因当日数据缺失而整体跳过。
+
+        Args:
+            target_date: 目标日期，格式YYYY-MM-DD
+            lookback_days: 向前回看交易日天数，默认0表示仅取当日(原行为，向后兼容)
+
+        Returns:
+            set: 有K线数据的股票代码集合
+        """
+        try:
+            if lookback_days and lookback_days > 0:
+                # 窗口模式：取 [target_date - lookback_days, target_date] 内有K线的股票
+                sql = "SELECT DISTINCT code FROM stock_kline WHERE date BETWEEN date(?, ?) AND ?"
+                results = self.query(sql, (target_date, f'-{lookback_days} days', target_date))
+                logger.info(f"[批量] 获取 {target_date} 前{lookback_days}日有效股票: "
+                            f"{len(results) if results else 0} 只")
+            else:
+                # 默认模式：仅取当日(向后兼容选股场景)
+                sql = "SELECT DISTINCT code FROM stock_kline WHERE date = ?"
+                results = self.query(sql, (target_date,))
+                logger.info(f"[批量] 获取 {target_date} 有效股票: {len(results) if results else 0} 只")
+            codes = {row['code'] for row in results} if results else set()
+            return codes
+        except Exception as e:
+            logger.error(f"获取有效股票代码失败: {str(e)}")
+            return set()
+
+    def read_all_stocks_kline(self, start_date: str, end_date: str,
+                              codes: Optional[set] = None) -> 'pd.DataFrame':
+        """
+        批量读取全市场K线数据（一次SQL替代逐只加载）
+
+        可通过 codes 参数限定股票范围，仅加载指定的股票代码。
+
+        Args:
+            start_date: 起始日期，格式YYYY-MM-DD
+            end_date: 结束日期，格式YYYY-MM-DD
+            codes: 可选，限定只加载这些股票代码的数据
+
+        Returns:
+            pd.DataFrame: 全市场K线数据，包含 code, date, open, high, low,
+                          close, volume, market_cap, K, D, J 列
+        """
+        import pandas as pd
+
+        try:
+            if codes:
+                # 仅加载指定股票：构建 IN (?, ?, ...) 子句
+                placeholders = ','.join('?' * len(codes))
+                sql = f"""
+                    SELECT code, date, open, high, low, close,
+                           volume, market_cap, K, D, J
+                    FROM stock_kline
+                    WHERE code IN ({placeholders})
+                      AND date BETWEEN ? AND ?
+                    ORDER BY code, date ASC
+                """
+                params = list(codes) + [start_date, end_date]
+            else:
+                sql = """
+                    SELECT code, date, open, high, low, close,
+                           volume, market_cap, K, D, J
+                    FROM stock_kline
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY code, date ASC
+                """
+                params = (start_date, end_date)
+
+            results = self.query(sql, params)
+            if not results:
+                logger.warning(f"[批量] 日期范围 {start_date}~{end_date} 无K线数据")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(results)
+            logger.info(
+                f"[批量] 加载K线数据 {start_date}~{end_date}: "
+                f"{len(df)} 行, {df['code'].nunique()} 只股票"
+                + (f" (限定{len(codes)}只)" if codes else "")
+            )
+            return df
+        except Exception as e:
+            logger.error(f"批量读取全市场K线失败: {str(e)}")
+            return pd.DataFrame()
+
+    # ==================== 股票收藏夹相关方法 ====================
+
+    def add_favorite(self, stock_code: str, stock_name: str = "",
+                     strategy_name: str = "", selection_date: str = "") -> bool:
+        """添加股票到收藏夹
+        Args:
+            stock_code: 股票代码
+            stock_name: 股票名称
+            strategy_name: 选股策略名称
+            selection_date: 选入日期 YYYY-MM-DD
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            sql = """
+                INSERT OR REPLACE INTO stock_favorite
+                (stock_code, stock_name, strategy_name, selection_date, saved_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """
+            conn = self.connect()
+            conn.execute(sql, (stock_code, stock_name, strategy_name, selection_date))
+            conn.commit()
+            logger.info(f"收藏股票成功: {stock_code} {stock_name}")
+            return True
+        except Exception as e:
+            logger.error(f"收藏股票失败 {stock_code}: {str(e)}")
+            return False
+
+    def remove_favorite(self, stock_code: str) -> bool:
+        """从收藏夹移除股票
+        Args:
+            stock_code: 股票代码
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            sql = "DELETE FROM stock_favorite WHERE stock_code = ?"
+            conn = self.connect()
+            conn.execute(sql, (stock_code,))
+            conn.commit()
+            logger.info(f"取消收藏成功: {stock_code}")
+            return True
+        except Exception as e:
+            logger.error(f"取消收藏失败 {stock_code}: {str(e)}")
+            return False
+
+    def get_favorites(self) -> list:
+        """获取所有收藏股票，按保存时间倒序
+        Returns:
+            list: 收藏记录列表
+        """
+        try:
+            sql = """
+                SELECT id, stock_code, stock_name, strategy_name, selection_date, saved_at, remark
+                FROM stock_favorite
+                ORDER BY saved_at DESC
+            """
+            results = self.query(sql)
+            return results if results else []
+        except Exception as e:
+            logger.error(f"获取收藏列表失败: {str(e)}")
+            return []
+
+    def is_favorited(self, stock_code: str) -> bool:
+        """检查股票是否已收藏
+        Args:
+            stock_code: 股票代码
+        Returns:
+            bool: 是否已收藏
+        """
+        try:
+            sql = "SELECT COUNT(*) as cnt FROM stock_favorite WHERE stock_code = ?"
+            results = self.query(sql, (stock_code,))
+            return results and results[0].get('cnt', 0) > 0
+        except Exception as e:
+            logger.error(f"检查收藏状态失败 {stock_code}: {str(e)}")
+            return False
+
+    def get_latest_selection_record(self, stock_code: str) -> dict:
+        """获取股票最近一次选股命中记录
+        Args:
+            stock_code: 股票代码
+        Returns:
+            dict: 包含 strategy_name 和 selection_date 的字典，无记录返回空字典
+        """
+        try:
+            sql = """
+                SELECT strategy_name, selection_date
+                FROM stock_selection_record
+                WHERE stock_code = ? AND is_active = 1
+                ORDER BY selection_date DESC
+                LIMIT 1
+            """
+            results = self.query(sql, (stock_code,))
+            if results:
+                row = results[0]
+                sel_date = row.get('selection_date', '')
+                # 统一日期格式为 YYYY-MM-DD
+                if sel_date:
+                    sel_date = str(sel_date).replace('-', '')[:8]
+                    sel_date = f"{sel_date[:4]}-{sel_date[4:6]}-{sel_date[6:8]}"
+                return {
+                    'strategy_name': row.get('strategy_name', ''),
+                    'selection_date': sel_date,
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"获取选股记录失败 {stock_code}: {str(e)}")
             return {}

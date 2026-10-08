@@ -131,13 +131,25 @@ class BacktestBatchQueue:
             self._data = json.load(f)
 
     def _init_progress(self):
+<<<<<<< HEAD
         """初始化进度文件"""
+=======
+        """初始化进度文件
+
+        增加 batch_started_at 字段记录批次启动时间，
+        供前端预估整体剩余耗时使用（批次3）
+        """
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         progress = {
             'batch_id': self.batch_id,
             'status': 'pending',
             'total_tasks': len(self._data.get('tasks', [])),
             'completed_tasks': 0,
             'failed_tasks': 0,
+<<<<<<< HEAD
+=======
+            'batch_started_at': None,  # 批次启动时间，start() 时填入
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             'current_task': None,
             'task_results': []
         }
@@ -145,7 +157,22 @@ class BacktestBatchQueue:
             json.dump(self._deep_serialize(progress), f, ensure_ascii=False, indent=2)
 
     def _update_progress(self):
+<<<<<<< HEAD
         """更新进度文件"""
+=======
+        """更新进度文件
+
+        扩展字段（批次3）：
+        - 顶层增加 batch_started_at，记录批次启动时间
+        - current_task 增加 started_at/done_days/total_days，
+          其中 done_days/total_days 实时从 backtest_engine.BACKTEST_PROGRESS 读取
+        - task_results 每条增加 started_at/completed_at/total_days，
+          供前端计算平均单任务耗时
+        """
+        # 延迟导入，避免循环依赖
+        from trading.backtest_engine import BACKTEST_PROGRESS
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         tasks = self._data.get('tasks', [])
         completed = sum(1 for t in tasks if t.get('status') == 'completed')
         failed = sum(1 for t in tasks if t.get('status') == 'failed')
@@ -153,10 +180,29 @@ class BacktestBatchQueue:
         current_task = None
         if self._data.get('current_index', -1) >= 0 and self._data['current_index'] < len(tasks):
             task = tasks[self._data['current_index']]
+<<<<<<< HEAD
             current_task = {
                 'index': self._data['current_index'],
                 'strategy_name': task.get('strategy_name'),
                 'status': task.get('status')
+=======
+            # 读取当前任务在引擎内的实时交易日进度
+            bp = BACKTEST_PROGRESS
+            current_task = {
+                'index': self._data['current_index'],
+                'strategy_name': task.get('strategy_name'),
+                'status': task.get('status'),
+                # 任务开始时间，_execute_loop 中记录
+                'started_at': task.get('started_at'),
+                # 当前任务已完成的交易日数
+                'done_days': bp.get('done_days', 0),
+                # 当前任务交易日总数
+                'total_days': bp.get('total_days', 0),
+                # 当前任务正在回测的交易日
+                'current_date': bp.get('current_date'),
+                # 引擎内任务启动时间（用于校验）
+                'engine_started_at': bp.get('started_at'),
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             }
 
         progress = {
@@ -165,6 +211,11 @@ class BacktestBatchQueue:
             'total_tasks': len(tasks),
             'completed_tasks': completed,
             'failed_tasks': failed,
+<<<<<<< HEAD
+=======
+            # 批次启动时间，start() 中写入 self._data['started_at']
+            'batch_started_at': self._data.get('started_at'),
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             'current_task': current_task,
             'task_results': [
                 {
@@ -172,7 +223,23 @@ class BacktestBatchQueue:
                     'strategy_name': t.get('strategy_name'),
                     'status': t.get('status'),
                     'result': t.get('result'),
+<<<<<<< HEAD
                     'error': t.get('error')
+=======
+                    'error': t.get('error'),
+                    # 任务开始时间（_execute_loop 中写入）
+                    'started_at': t.get('started_at'),
+                    # 任务完成/失败时间（_execute_loop 中写入）
+                    'completed_at': t.get('completed_at'),
+                    # 该任务交易日总数（_execute_loop 任务结束时写入）
+                    'total_days': t.get('total_days'),
+                    # 【2026-09-21】回传任务区间 ✓
+                    #   前端结果页签据此区分"同策略、不同区间"的多个任务 ✗
+                    #   （此前不回传 ✗ → 唯一键相同 ✗ → 后 3 个结果被当成重复跳过 ✗，只显示 1 个 ✓）
+                    #   兜底：任务定义里没有时，从回测结果里取（result 通常带 start_date/end_date ✓）
+                    'start_date': t.get('start_date') or (t.get('result') or {}).get('start_date'),
+                    'end_date': t.get('end_date') or (t.get('result') or {}).get('end_date'),
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 }
                 for i, t in enumerate(tasks)
                 if t.get('status') in ('completed', 'failed')
@@ -216,6 +283,11 @@ class BacktestBatchQueue:
 
                 self._data['current_index'] = i
                 task['status'] = 'running'
+<<<<<<< HEAD
+=======
+                # 记录任务开始时间，供前端预估剩余耗时使用（批次3）
+                task['started_at'] = datetime.now().isoformat()
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 self._save_queue()
                 self._update_progress()
 
@@ -226,11 +298,30 @@ class BacktestBatchQueue:
                     task['status'] = 'completed'
                     task['result'] = result
                     task['completed_at'] = datetime.now().isoformat()
+<<<<<<< HEAD
+=======
+                    # 任务结束后读取引擎内的交易日总数，供后续预估使用
+                    try:
+                        from trading.backtest_engine import BACKTEST_PROGRESS
+                        task['total_days'] = BACKTEST_PROGRESS.get('total_days', 0)
+                    except Exception as _e:
+                        logger.warning(f"读取任务 {i + 1} total_days 失败: {str(_e)}")
+                        task['total_days'] = task.get('total_days', 0)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     logger.info(f"任务 {i + 1} 完成: {task.get('strategy_name')}")
                 except Exception as e:
                     task['status'] = 'failed'
                     task['error'] = str(e)
                     task['completed_at'] = datetime.now().isoformat()
+<<<<<<< HEAD
+=======
+                    # 失败任务也尽量记录交易日总数
+                    try:
+                        from trading.backtest_engine import BACKTEST_PROGRESS
+                        task['total_days'] = BACKTEST_PROGRESS.get('total_days', 0)
+                    except Exception as _e:
+                        task['total_days'] = task.get('total_days', 0)
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     logger.error(f"任务 {i + 1} 失败: {task.get('strategy_name')}, error: {str(e)}")
 
                 self._save_queue()
@@ -285,6 +376,7 @@ class BacktestBatchQueue:
             'end_date': end_date
         })
 
+<<<<<<< HEAD
         # 从配置文件读取海龟策略参数
         if timing_strategy == 'turtle':
             try:
@@ -306,6 +398,38 @@ class BacktestBatchQueue:
                            f"n_exit={turtle_params.get('n_exit')}, atr_period={turtle_params.get('atr_period')}")
             except Exception as e:
                 logger.warning(f"批量回测读取海龟策略配置失败，使用默认参数: {str(e)}")
+=======
+        # 【2026-09-23 合并】海龟类参数统一走**唯一读取入口** ✓
+        #   yaml 只保留一个海龟类配置块（TurtleStrategy.params ✓），海龟与海龟plus 共用 ✓；
+        #   低位海龟由该入口返回自身 1/6/12 口径 ✓。
+        #   历史坑（已消除）：本处原先手写 turtle / low_turtle 两个分支，
+        #   海龟plus 漏注入 ✗ → 批量回测跑代码默认预设，与单次回测/配置不一致 ✗。
+        from trading.timing_strategies import (TURTLE_FAMILY_STRATEGIES,
+                                               TURTLE_FAMILY_PARAM_KEYS,
+                                               load_turtle_family_params)
+        if timing_strategy in TURTLE_FAMILY_STRATEGIES:
+            try:
+                config_manager = StrategyConfigManager()
+                params = load_turtle_family_params(timing_strategy, config_manager)
+                _tp = dict(config.get('timing_params') or {})
+                # 调用方显式传入的同名键优先（不覆盖 ✓）
+                params = {**params, **(_tp.get(timing_strategy) or {})}
+                _tp[timing_strategy] = params
+                config['timing_params'] = _tp
+                # 顶层键（引擎/运行器优先读顶层配置 ✓），只写海龟类已知键 ✓
+                config.update({k: v for k, v in params.items()
+                               if v is not None and k in TURTLE_FAMILY_PARAM_KEYS})
+                # 预设特例：顶层键名为 turtle_preset ✓（timing_params 内仍叫 preset ✓）
+                if params.get('preset') is not None:
+                    config['turtle_preset'] = params['preset']
+                logger.info(
+                    f"批量回测注入海龟类参数（{timing_strategy}）: n_entry={params.get('n_entry')}, "
+                    f"n_exit={params.get('n_exit')}, atr_period={params.get('atr_period')}, "
+                    f"preset={params.get('preset')}, lookback_days={params.get('lookback_days')}, "
+                    f"max_additions={params.get('max_additions')}")
+            except Exception as e:
+                logger.warning(f"批量回测读取海龟类策略配置失败，沿用调用方参数: {e}")
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         engine = BacktestEngine(db_path="data/stock_selection.db")
         result = engine.run_backtest(strategy_name, config)
@@ -314,10 +438,15 @@ class BacktestBatchQueue:
         try:
             backtest_dao = BacktestDAO(db_path="data/stock_selection.db")
 
+<<<<<<< HEAD
             # 计算final_capital
             final_capital = config.get('initial_capital', 300000)
             if 'capital_history' in result and result['capital_history']:
                 final_capital = result['capital_history'][-1]
+=======
+            # 使用引擎返回的 final_capital（引擎内已确保 capital_history 与其一致）
+            final_capital = result.get('final_capital', config.get('initial_capital', 300000))
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
             # 构建保存到数据库的结果格式
             save_result = {
@@ -338,8 +467,22 @@ class BacktestBatchQueue:
                 'profit_loss_ratio': result.get('performance', {}).get('profit_loss_ratio', 0),
                 'max_drawdown': result.get('performance', {}).get('max_drawdown', 0),
                 'sharpe_ratio': result.get('performance', {}).get('sharpe_ratio', 0),
+<<<<<<< HEAD
                 'initial_capital': config.get('initial_capital', 300000),
                 'final_capital': final_capital
+=======
+                # 【2026-09-22 修复】同上：补上漏传的 avg_hold_days（否则落库恒为 0 ✗）
+                'avg_hold_days': result.get('performance', {}).get('avg_hold_days', 0),
+                'initial_capital': config.get('initial_capital', 300000),
+                'final_capital': final_capital,
+                # ★【2026-10-03 用户要求 ✓】批量回测同样落库**主要参数设置情况** ✓
+                #   （与单次回测**同一实现** ✓：`build_param_snapshot` ✓）
+                #   ⚠️ 批量尤其需要 ✓ —— 批量常做**参数网格** ✗✓，若无快照
+                #     事后根本分不清每一行是用哪组参数跑出来的 ✗。
+                'param_snapshot': result.get('param_snapshot'),
+                'data_fingerprint': result.get('data_fingerprint'),
+                'data_gate': result.get('data_gate'),
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             }
 
             # 直接保存新回测结果，不检查是否已存在

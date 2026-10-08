@@ -114,17 +114,15 @@ class BacktestTaskManager {
   }
 
   /**
-   * 计算预计耗时（小时）
-   * 每个任务预计2-3小时，取平均2.5小时
-   * @returns {string} 预计耗时字符串，格式: "X-Y小时"
+   * 计算预计耗时
+   * 执行前无法准确预估，启动后由轮询逻辑按实际进度预估（批次3）
+   * @returns {string} 预计耗时字符串
    */
   estimateTime() {
     const count = this.getTaskCount();
-    if (count === 0) return '0小时';
-    
-    const minHours = count * 2;
-    const maxHours = count * 3;
-    return `${minHours}-${maxHours}小时`;
+    if (count === 0) return '0个任务';
+    // 执行前不再硬编码时长，启动后按实际进度预估
+    return `${count}个任务，启动后预估`;
   }
 
   /**
@@ -207,10 +205,20 @@ class BacktestUIManager {
     // 择时策略映射
     const timingStrategyMap = {
       'turtle': '海龟策略',
+<<<<<<< HEAD
       'rsi': 'RSI策略',
       'bollinger': '布林带策略',
       'support': '支撑位策略',
       'macd_bollinger': '顺势宝'
+=======
+      'low_turtle': '低位海龟策略',
+      'turtle_plus': '海龟plus',
+      'rsi': 'RSI策略',
+      'bollinger': '布林带策略',
+      'support': '支撑位策略',
+      'macd_bollinger': '顺势宝',
+      'uptrend_pullback': '趋势回调缩量策略'
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     };
 
     // 添加任务行
@@ -249,7 +257,12 @@ class BacktestUIManager {
    */
   showProgress(info) {
     this.elements.progressContainer.style.display = 'block';
-    this.elements.currentTaskInfo.textContent = `正在执行: ${info.strategyName} (${info.currentIndex}/${info.totalCount})`;
+    // 优先使用调用方传入的完整任务行（含交易日进度），否则回退到简单拼接
+    if (info.currentTaskLine) {
+      this.elements.currentTaskInfo.textContent = info.currentTaskLine;
+    } else {
+      this.elements.currentTaskInfo.textContent = `正在执行: ${info.strategyName} (${info.currentIndex}/${info.totalCount})`;
+    }
     this.updateProgressBar(info.progress);
     this.elements.remainingTime.textContent = info.remainingTime;
   }
@@ -279,12 +292,24 @@ class BacktestUIManager {
     // 择时策略中文名称映射
     const timingStrategyNames = {
       'turtle': '海龟策略',
+<<<<<<< HEAD
       'rsi': 'RSI策略',
       'bollinger': '布林带策略',
       'support': '支撑位策略',
       'macd_bollinger': '顺势宝'
     };
     
+=======
+      'low_turtle': '低位海龟策略',
+      'turtle_plus': '海龟plus',
+      'rsi': 'RSI策略',
+      'bollinger': '布林带策略',
+      'support': '支撑位策略',
+      'macd_bollinger': '顺势宝',
+      'uptrend_pullback': '趋势回调缩量策略'
+    };
+
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     // 获取择时策略名称（优先从结果中获取，其次从任务中获取）
     let timingStrategy = null;
     if (result.timing_strategy) {
@@ -317,7 +342,15 @@ class BacktestUIManager {
     // 然后检查是否有相同策略名称+择时策略+日期范围的页签
     const strategyName = result.strategy_name || task.strategy_name;
     const dateRange = task.start_date && task.end_date ? `${task.start_date}~${task.end_date}` : '';
+<<<<<<< HEAD
     const uniqueKey = `${strategyName}-${timingStrategyDisplay}-${dateRange}`;
+=======
+    // 【2026-09-21】唯一键纳入 task.id ✓
+    //   背景：批量任务常是"同一策略 + 同一择时，仅区间不同" ✓，而后端 task_results
+    //   **不回传** start_date/end_date ✗ → dateRange 为空 ✗ → 4 个结果的 uniqueKey
+    //   完全相同 ✗ → 后 3 个被判"重复"直接跳过 ✗（本次现象：完成 4 个只显示 1 个 ✓）
+    const uniqueKey = `${strategyName}-${timingStrategyDisplay}-${dateRange}-#${task.id}`;
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     
     for (const tab of existingTabs) {
       if (tab.dataset.uniqueKey === uniqueKey) {
@@ -352,6 +385,14 @@ class BacktestUIManager {
     if (task.start_date && task.end_date) {
       tabText += ` ${task.start_date}~${task.end_date}`;
     }
+<<<<<<< HEAD
+=======
+    // 【2026-09-21】无区间信息时补任务序号 ✓，避免"多个页签同名"难以区分 ✓
+    //   （后端 task_results 未回传区间 ✗，前端只能用序号兜底 ✓）
+    if (!(task.start_date && task.end_date) && task.id !== undefined && task.id !== null) {
+      tabText += ` #${task.id}`;
+    }
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     
     tabTitle.innerHTML = `
       <span>${tabText}</span>
@@ -404,6 +445,7 @@ class BacktestUIManager {
     // 择时策略中文名称映射
     const timingStrategyNames = {
       'turtle': '海龟策略',
+<<<<<<< HEAD
       'rsi': 'RSI策略',
       'bollinger': '布林带策略',
       'support': '支撑位策略',
@@ -426,6 +468,33 @@ class BacktestUIManager {
       timingStrategy = 'turtle';
     }
     
+=======
+      'low_turtle': '低位海龟策略',
+      'turtle_plus': '海龟plus',
+      'rsi': 'RSI策略',
+      'bollinger': '布林带策略',
+      'support': '支撑位策略',
+      'macd_bollinger': '顺势宝',
+      'uptrend_pullback': '趋势回调缩量策略'
+    };
+
+    // 获取择时策略名称（优先从结果中获取，其次从任务中获取）
+    let timingStrategy = null;
+    if (result.timing_strategy) {
+      if (typeof result.timing_strategy === 'object') {
+        timingStrategy = result.timing_strategy.name;
+      } else {
+        timingStrategy = result.timing_strategy;
+      }
+    }
+    if (!timingStrategy && task.timing_strategy) {
+      timingStrategy = task.timing_strategy;
+    }
+    if (!timingStrategy) {
+      timingStrategy = 'turtle';
+    }
+    
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     // 获取择时策略显示名称
     const timingStrategyDisplay = timingStrategyNames[timingStrategy] || timingStrategy;
     
@@ -510,7 +579,11 @@ class BacktestUIManager {
         <div style="margin-bottom: 24px;">
           <h5 style="margin-bottom: 12px; color: #374151; font-size: 14px;">权益曲线</h5>
           <div style="border: 1px solid #e5e7eb; border-radius: 6px; padding: 16px; background: #ffffff;">
-            <canvas id="equity-chart-${task.id}" height="300"></canvas>
+            <!-- 【2026-09-20】Chart.js 标准写法：固定高度定位容器
+                 （原为 canvas 内联 height + 父容器无高度 → 画布缓冲为 0 → 权益曲线空白） -->
+            <div style="position:relative; height:300px; width:100%;">
+              <canvas id="equity-chart-${task.id}"></canvas>
+            </div>
           </div>
         </div>
 
@@ -634,7 +707,7 @@ class BacktestUIManager {
     
     // 创建新图表
     try {
-      const chart = new Chart(ctx, {
+      const chart = new window.Chart(ctx, {   // 【2026-09-20】统一用 window.Chart
         type: 'line',
         data: {
           labels: labels,
@@ -915,6 +988,208 @@ class BacktestUIManager {
   }
 }
 
+// ==================== ETA 预估工具（批次3） ====================
+
+/**
+ * 将秒数格式化为人类可读的时长
+ * @param {number} seconds - 秒数
+ * @returns {string} 格式化后的时长，如 "2小时15分钟"、"5分钟"、"30秒"
+ */
+function formatDuration(seconds) {
+  // 异常值兜底
+  if (!seconds || seconds < 0 || !isFinite(seconds)) return '--';
+  // 不足1分钟按秒展示
+  if (seconds < 60) return `${Math.round(seconds)}秒`;
+  const minutes = Math.floor(seconds / 60);
+  // 不足1小时按分钟展示
+  if (minutes < 60) return `${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  // 不足1天按"小时+分钟"展示
+  if (hours < 24) return remainMinutes > 0 ? `${hours}小时${remainMinutes}分钟` : `${hours}小时`;
+  const days = Math.floor(hours / 24);
+  const remainHours = hours % 24;
+  return remainHours > 0 ? `${days}天${remainHours}小时` : `${days}天`;
+}
+
+/**
+ * 计算批量回测剩余耗时预估
+ * 算法（批次3）：
+ *   - 当前任务剩余 = (total_days - done_days) × (已耗时 / done_days)
+ *     前3个交易日无法稳定估算单日耗时，标记为"预估中"
+ *   - 平均任务耗时 = 已完成任务累计耗时 / 已完成任务数
+ *   - 未开始任务预估 = 未开始任务数 × 平均任务耗时
+ *   - 总剩余 = 当前任务剩余 + 未开始任务预估
+ * @param {Object} status - /backtest/batch/status 返回的 data 对象
+ * @returns {Object} { etaText, currentTaskText, progressPercent }
+ */
+// 【2026-09-20】ETA 观测基准：前端**首次看到当前任务在跑**的时刻
+//   用途：排除"点击开始 → 引擎真正处理每日流程"之间的预处理/预加载耗时 ✓
+//   （用户要求：估算只统计"处理每日流程"的时间 ✓；切任务/切批次自动重置 ✓）
+const _batchEtaObs = { batchId: null, taskKey: null, taskSeenAt: null, durations: [] };
+
+/** 【2026-09-20】还原「开始执行回测」按钮的文案与样式（运行结束后调用 ✓） */
+function _restoreExecutionBtn() {
+  const b = backtestUIManager && backtestUIManager.elements
+    ? backtestUIManager.elements.startExecutionBtn : null;
+  if (!b) return;
+  if (b.dataset.origText) b.textContent = b.dataset.origText;
+  if (b.dataset.origStyle !== undefined) b.setAttribute('style', b.dataset.origStyle);
+}
+
+function calcBatchEta(status) {
+  // 缺少 current_task 时回退到粗粒度进度
+  if (!status.current_task) {
+    const pct = status.total_tasks > 0
+      ? Math.round((status.completed_tasks / status.total_tasks) * 100)
+      : 0;
+    return { etaText: '--', currentTaskText: '', progressPercent: pct };
+  }
+
+  const ct = status.current_task;
+  const now = Date.now();
+  // 【2026-09-20】估算基准（排除预处理/预加载耗时 ✓）：
+  //   ① 首选：前端**首次观测到当前任务在跑**的时刻（_batchEtaObs ✓）
+  //   ② 兜底：后端 current_task.started_at（例如刚打开页面时任务已在跑 ✓）
+  const _obsKey = `${status.batch_id || ''}#${ct.index !== undefined ? ct.index : (ct.strategy_name || '')}`;
+  if (_batchEtaObs.batchId !== (status.batch_id || '')) {   // 换了批次 → 清空历史 ✓
+    _batchEtaObs.batchId = status.batch_id || '';
+    _batchEtaObs.durations = [];
+  }
+  if (_batchEtaObs.taskKey !== _obsKey) {       // 新任务 → 结算上一个任务的"每日流程"耗时 ✓
+    if (_batchEtaObs.taskKey && _batchEtaObs.taskSeenAt) {
+      const _prev = (now - _batchEtaObs.taskSeenAt) / 1000;
+      if (_prev > 0) _batchEtaObs.durations.push(_prev);
+    }
+    _batchEtaObs.taskKey = _obsKey;
+    _batchEtaObs.taskSeenAt = now;
+  }
+  const _backendStart = ct.started_at ? new Date(ct.started_at).getTime() : null;
+  // 【2026-09-20】基准 = **第 1 个交易日完成的那一刻** ✓
+  //   原因：任务刚"running"时引擎往往还在预处理/预加载 ✗（实测该任务 19:09 running、
+  //   19:2x 才进入逐日循环 ✗）→ 用任务启动时刻会把预处理算进单日耗时 → 预估偏大 ✗。
+  //   改为一观察到 done_days>0 就打点 ✓，并以 (done_days-1) 为分母 ✓ → 只统计"每日流程" ✓
+  const _dd0 = Number(ct.done_days) || 0;     // ⚠️ 此处 doneDays 尚未声明 ✗ → 直接用 ct 字段 ✓
+  if (_dd0 === 0) {
+    _batchEtaObs.firstDoneAt = null;          // 新任务/回退 → 重置 ✓
+  } else if (!_batchEtaObs.firstDoneAt) {
+    _batchEtaObs.firstDoneAt = now;           // 首个交易日刚完成 ✓
+  }
+  const startedAt = _batchEtaObs.firstDoneAt || _batchEtaObs.taskSeenAt || _backendStart;
+  const elapsedSec = startedAt ? Math.max(0, (now - startedAt) / 1000) : 0;
+
+  const doneDays = ct.done_days || 0;
+  const totalDays = ct.total_days || 0;
+
+  // 1. 当前任务剩余预估
+  let currentTaskRemainSec = null; // null 表示"预估中"
+  // 前3个交易日单日耗时不稳定，不展示预估
+  if (doneDays >= 3 && totalDays > 0 && startedAt) {
+    // 【2026-09-20】分母用 (done_days - 1)：因为基准是"第 1 天完成时" ✓
+    //   → 只反映"每日流程"的净耗时 ✓（不含预处理/预加载 ✓）
+    const secPerDay = elapsedSec / Math.max(1, doneDays - 1);
+    const remainDays = totalDays - doneDays;
+    currentTaskRemainSec = remainDays * secPerDay;
+  }
+
+  // 2. 已完成任务平均耗时（用于预估未开始任务）
+  const results = status.task_results || [];
+  let totalTaskSec = 0;
+  let validTaskCount = 0;
+  results.forEach((r) => {
+    // 仅计算同时具备开始和完成时间的任务
+    if (r.started_at && r.completed_at) {
+      const s = new Date(r.started_at).getTime();
+      const e = new Date(r.completed_at).getTime();
+      if (e > s) {
+        totalTaskSec += (e - s) / 1000;
+        validTaskCount += 1;
+      }
+    }
+  });
+  // 【2026-09-20】平均任务耗时优先用**前端观测值** ✓（其计时从"首次看到任务在跑"起 ✓，
+  //   已排除预处理/预加载 ✗）；后端值（started_at→completed_at ✓）含预处理，仅作兜底 ✓
+  const _feAvgSec = _batchEtaObs.durations.length
+    ? _batchEtaObs.durations.reduce((a, b) => a + b, 0) / _batchEtaObs.durations.length
+    : null;
+  const avgTaskSec = _feAvgSec !== null
+    ? _feAvgSec
+    : (validTaskCount > 0 ? totalTaskSec / validTaskCount : null);
+
+  // 3. 未开始任务数（总任务 - 已完成 - 当前执行中1个）
+  const completedTasks = status.completed_tasks || 0;
+  const totalTasks = status.total_tasks || 0;
+  const pendingTaskCount = Math.max(0, totalTasks - completedTasks - 1);
+
+  // 4. 未开始任务预估总耗时
+  // 【2026-09-20】无"已完成任务均值"时，用**当前任务速率**外推 ✓
+  //   （用户明确：本批共 5 个策略/任务 ✓ → 批次总剩余必须包含后续任务 ✗）
+  //   该任务预计总耗时 ≈ 单日净耗时 × 任务总交易日数 ✓（≥3 天门槛与上面一致 ✓）
+  const _rateTaskSec = (doneDays >= 3 && startedAt && totalDays > 0)
+    ? (elapsedSec / Math.max(1, doneDays - 1)) * totalDays
+    : null;
+  const _pendingBaseSec = (avgTaskSec !== null) ? avgTaskSec : _rateTaskSec;
+  const pendingTaskRemainSec = _pendingBaseSec !== null
+    ? _pendingBaseSec * pendingTaskCount
+    : null;
+
+  // 5. 批次总剩余 = 当前任务剩余 + 未开始任务预估
+  let totalRemainSec = null;
+  let etaByTaskAvg = false;            // 【2026-09-20】是否采用"任务级均值"兜底
+  if (currentTaskRemainSec !== null && pendingTaskRemainSec !== null) {
+    totalRemainSec = currentTaskRemainSec + pendingTaskRemainSec;
+  } else if (currentTaskRemainSec !== null) {
+    // 仅有当前任务剩余（无历史平均）
+    totalRemainSec = currentTaskRemainSec;
+  } else if (pendingTaskRemainSec !== null) {
+    // 【2026-09-20 修复】当前任务刚起步时（doneDays < 3 → 单日耗时不稳定，故
+    //   currentTaskRemainSec = null ✗），"已完成任务的平均耗时"明明可用 ✓ 却
+    //   被原实现整体丢弃 ✗ → 界面一直停在"预估中" ✗（本次问题的根因 ✓）。
+    //   现改为：按均值估"当前任务 1 份 + 未开始任务 N 份" ✓，并标注估算依据 ✓
+    totalRemainSec = avgTaskSec + pendingTaskRemainSec;
+    etaByTaskAvg = true;
+  }
+
+  // 组装 ETA 文本
+  let etaText;
+  if (totalRemainSec !== null) {
+    const remainTxt = formatDuration(totalRemainSec);
+    // 同时展示当前任务剩余，便于用户判断
+    if (currentTaskRemainSec !== null) {
+      const curTxt = formatDuration(currentTaskRemainSec);
+      etaText = `当前剩余 ${curTxt}，批次总剩余 ${remainTxt}`;
+    } else if (etaByTaskAvg) {
+      // 该分支只在"有已完成任务均值"时进入 ✓（当前任务剩余未知 ✓）
+      etaText = `批次总剩余 ${remainTxt}（按已完成任务均值估算，共 ${totalTasks} 个任务）`;
+    } else {
+      etaText = `批次总剩余 ${remainTxt}`;
+    }
+  } else if (startedAt) {
+    // 前3个交易日：展示已耗时，标注预估中
+    etaText = `已耗时 ${formatDuration(elapsedSec)}，预估中`;
+  } else {
+    etaText = '预估中';
+  }
+
+  // 当前任务展示文本：交易日进度 + 当前交易日（策略名/序号由 showProgress 拼接）
+  const dayProgress = totalDays > 0 ? ` | 交易日 ${doneDays}/${totalDays}` : '';
+  const curDate = ct.current_date ? ` (${ct.current_date})` : '';
+  const currentTaskText = `交易日进度${dayProgress}${curDate}`;
+
+  // 整体进度百分比：按交易日加权
+  let progressPercent;
+  if (totalTasks > 0) {
+    // 当前任务内交易日进度（0~1）
+    const taskInnerRatio = totalDays > 0 ? doneDays / totalDays : 0;
+    // 整体 = (已完成任务 + 当前任务内进度) / 总任务数
+    progressPercent = Math.round(((completedTasks + taskInnerRatio) / totalTasks) * 100);
+  } else {
+    progressPercent = 0;
+  }
+
+  return { etaText, currentTaskText, progressPercent };
+}
+
 // ==================== 全局初始化 ====================
 
 // 创建全局实例
@@ -1079,7 +1354,16 @@ async function executeBacktestBatch() {
     }
 
     // 禁用开始执行按钮
-    backtestUIManager.elements.startExecutionBtn.disabled = true;
+    // 【2026-09-20】运行中：文案改「回测中…」并置灰 ✓（结束后由 _restoreExecutionBtn 还原 ✓）
+  const _seBtn = backtestUIManager.elements.startExecutionBtn;
+  if (_seBtn) {
+    if (_seBtn.dataset.origText === undefined) _seBtn.dataset.origText = _seBtn.textContent.trim() || '开始执行回测';
+    if (_seBtn.dataset.origStyle === undefined) _seBtn.dataset.origStyle = _seBtn.getAttribute('style') || '';
+    _seBtn.textContent = '回测中…';
+    _seBtn.disabled = true;
+    _seBtn.setAttribute('style',
+      'padding:6px 16px;font-size:12px;background:#94a3b8;border-color:#94a3b8;color:#fff;cursor:not-allowed;');
+  }
 
     // 加载保存的回测配置
     let savedParams = {
@@ -1203,6 +1487,10 @@ async function executeBacktestBatch() {
     // 执行完成
     backtestUIManager.hideProgress();
     backtestUIManager.elements.startExecutionBtn.disabled = false;
+<<<<<<< HEAD
+=======
+    _restoreExecutionBtn();      // 【2026-09-20】还原按钮文案与样式 ✓
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     backtestUIManager.showInfo('批量回测执行完成', 'success');
 
   } catch (error) {
@@ -1210,6 +1498,7 @@ async function executeBacktestBatch() {
     backtestUIManager.showError(`批量回测执行失败: ${error.message}`);
     backtestUIManager.hideProgress();
     backtestUIManager.elements.startExecutionBtn.disabled = false;
+    _restoreExecutionBtn();      // 【2026-09-20】还原按钮文案与样式 ✓
   }
 }
 
@@ -1238,14 +1527,31 @@ async function pollBatchStatus(batchId, totalTasks) {
         const status = data.data;
         console.log(`批量任务状态: ${status.status}, 进度: ${status.completed_tasks}/${status.total_tasks}`);
 
+<<<<<<< HEAD
         // 更新 UI 进度
         if (status.current_task) {
+=======
+        // 更新 UI 进度（按实际交易日进度预估剩余耗时，批次3）
+        if (status.current_task) {
+          // 调用预估工具，计算 ETA、当前任务文本、加权进度百分比
+          const eta = calcBatchEta(status);
+          // 拼接当前任务展示文本：策略名 + 序号 + 交易日进度
+          const taskLine = `正在执行: ${status.current_task.strategy_name || '执行中'} `
+            + `(${status.completed_tasks + 1}/${status.total_tasks})${eta.currentTaskText}`;
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
           backtestUIManager.showProgress({
             strategyName: status.current_task.strategy_name || '执行中',
             currentIndex: status.completed_tasks + 1,
             totalCount: status.total_tasks,
+<<<<<<< HEAD
             progress: Math.round((status.completed_tasks / status.total_tasks) * 100),
             remainingTime: `${Math.round((status.total_tasks - status.completed_tasks - 1) * 2.5)}小时`
+=======
+            progress: eta.progressPercent,
+            remainingTime: eta.etaText,
+            // 透传当前任务行文本，供 UI 直接展示交易日进度
+            currentTaskLine: taskLine
+>>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
           });
         }
 
