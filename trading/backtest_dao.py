@@ -8,7 +8,6 @@
 - 交易记录的CRUD操作
 """
 
-import json
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -220,76 +219,8 @@ class BacktestDAO:
                 logger.error("回测结果为空")
                 return 0
             
-            # 【2026-09-20】确保 router_config 列存在（历史库无该列 → 幂等加列）
-            #   自适应回测在保存时会把"各档位策略配置摘要"写入该列，供回测历史详情展示
-            try:
-                _conn = self.db.connect()
-                _cols = [c[1] for c in _conn.execute(
-                    "PRAGMA table_info(backtest_result)").fetchall()]
-                if 'router_config' not in _cols:
-                    _conn.execute("ALTER TABLE backtest_result ADD COLUMN router_config TEXT")
-                    _conn.commit()
-                    logger.info("backtest_result 表已新增 router_config 列")
-            except Exception as e:
-                logger.warning(f"router_config 列检查/新增失败（忽略，配置摘要将不落库）: {e}")
-
-            # 【2026-09-25 M1/M4】数据可追溯列：数据指纹 + 闸门状态 + **版本号 + 严格模式** ✓
-            #   用途：重跑结果不一致时，可直接判断"是不是底层数据变了" ✓；
-            #        跨版本结果**禁止直接比较** ✓（用 data_version 判定 ✓）
-            try:
-                _conn = self.db.connect()
-                _cols = {c[1] for c in _conn.execute(
-                    "PRAGMA table_info(backtest_result)").fetchall()}
-                for _col in ('data_fingerprint', 'data_gate', 'data_version', 'strict_mode',
-                             # ★【2026-10-03 用户要求 ✓】主要参数快照 ✓（旧库自动补列 ✓）
-                             'params_snapshot'):
-                    if _col not in _cols:
-                        _conn.execute(
-                            f"ALTER TABLE backtest_result ADD COLUMN {_col} TEXT")
-                        _conn.commit()
-                        logger.info(f"backtest_result 表已新增 {_col} 列")
-            except Exception as e:
-                logger.warning(f"数据指纹列检查/新增失败（忽略，指纹将不落库）: {e}")
-
-            # ★★【2026-10-03 用户要求 ✓】主参数快照序列化 ✗→✓
-            #   · dict ⇒ JSON ✓；str ⇒ **原样存** ✓（兼容调用方自己拼好 JSON ✓）；
-            #   · 空/None ⇒ 空串 ✓（**不编造** ✗ —— 老调用方没传时如实为空 ✓，
-            #     详情页据此不渲染该卡片 ✓，绝不显示"看起来有其实没有"的内容 ✗）
-            _snap = result.get('param_snapshot')
-            if isinstance(_snap, str):
-                _snap_json = _snap
-            elif _snap:
-                try:
-                    _snap_json = json.dumps(_snap, ensure_ascii=False, default=str)
-                except Exception as _e:
-                    logger.warning(f"参数快照序列化失败（按空处理 ✗，不影响结果落库 ✓）: {_e}")
-                    _snap_json = ''
-            else:
-                _snap_json = ''
-
-            # 数据版本号（可读 ✓）：由指纹派生 ⇒ 同版本必然同号 ✓
-            #   · 对应说明书的 `data_version` ✓（M4 验收"跨版本禁止比较"的判定依据 ✓）
-            _fp_raw = result.get('data_fingerprint') or ''
-            _dv = result.get('data_version') or ''
-            if not _dv and _fp_raw:
-                import hashlib as _hl
-                _dv = 'dv-' + _hl.sha1(str(_fp_raw).encode('utf-8')).hexdigest()[:12]
-            # 严格模式快照 ✓：结果里明示"当时是否严格"（缺数据即失败 ✓）
-            _sm = result.get('strict_mode')
-            if _sm is None:
-                try:
-                    import yaml as _yaml
-                    from pathlib import Path as _P
-                    _cfg_p = _P(__file__).resolve().parents[1] / 'config' / 'backtest_engine_config.yaml'
-                    with open(_cfg_p, 'r', encoding='utf-8') as _f:
-                        _cfg = _yaml.safe_load(_f) or {}
-                    _sm = bool((_cfg.get('calendar') or {}).get('strict', True))
-                except Exception:
-                    _sm = True
-
             # 使用DBManager的insert方法，它已经处理了事务和lastrowid的获取
             result_id = self.db.insert('backtest_result', {
-                'router_config': result.get('router_config', '') or '',
                 'strategy_name': result.get('strategy_name', ''),
                 'support_level_method': result.get('support_level_method', ''),
                 'backtest_name': result.get('backtest_name', ''),
@@ -312,16 +243,7 @@ class BacktestDAO:
                 'avg_hold_days': result.get('avg_hold_days', 0),
                 'initial_capital': result.get('initial_capital', 1000000),
                 'final_capital': result.get('final_capital', 1000000),
-                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                # 【2026-09-25 M1/M4】数据指纹 + 闸门状态 + 版本号 + 严格模式（可追溯 ✓）
-                'data_fingerprint': (result.get('data_fingerprint') or '')[:4000],
-                'data_gate': __import__('json').dumps(result.get('data_gate') or {},
-                                                     ensure_ascii=False)[:500],
-                'data_version': str(_dv)[:64],
-                'strict_mode': 'true' if _sm else 'false',
-                # ★【2026-10-03 用户要求 ✓】本次回测的**主要参数设置情况**（JSON ✓）
-                #   ⇒ 两次结果不同时，**先看这一列**即可判断"是不是参数变了" ✓✓
-                'params_snapshot': _snap_json,
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
             
             logger.info(f"保存回测结果成功，result_id: {result_id}")

@@ -130,45 +130,7 @@ class StockDataFetcher:
         )
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
-<<<<<<< HEAD
     
-=======
-
-    def clear_session_pool(self):
-        """
-        清空 Session 连接池，释放所有 TCP 连接
-
-        长时间连续请求同一 API 时，Session 的连接池会累积连接，
-        服务端可能对旧连接限流或关闭，导致后续请求变慢。
-        调用此方法关闭旧连接并重建连接池，确保每次请求使用新连接。
-        """
-        try:
-            self.session.close()
-        except Exception:
-            pass
-        # 重建 Session（保持相同的 headers 和 adapter 配置）
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/javascript, */*',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Referer': 'https://quote.eastmoney.com/',
-            'Connection': 'keep-alive',
-        })
-        adapter = HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=20,
-            max_retries=Retry(
-                total=0,
-                allowed_methods=["GET"],
-            ),
-        )
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-        logger.debug("Session 连接池已重建")
-
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     # ==================== 股票列表管理 ====================
     
     def _load_local_stock_names(self) -> dict:
@@ -188,50 +150,15 @@ class StockDataFetcher:
         return {}
     
     def _save_stock_names(self, stock_dict: dict) -> None:
-        """把最新股票名称**刷新到数据库** stock_basic（数据更新环节的名称更新 · 2026-09-19）
-
-        背景（2026-09-19 排查）
-        ----------------------
-        本方法原为空实现（"已禁用，改为从数据库读取"），导致 `fetch_stock_list()` 拿到的
-        最新名称被**直接丢弃**；而库内 name 只在首次入库时写入一次、此后永不刷新。
-        若某股入库当天恰逢上市首日（数据源返回 `N某某` / 上市第 2~5 日返回 `C某某` 的
-        交易所上市标记），该错误名称会被**永久固化** —— 实测库存 23 条此类过期名称
-        （如 `301677 N欣兴工具`，上市已 37 个交易日）。
-
-        现改为两步：
-          1. 名称回写：仅更新**已存在**的代码（不新增行，避免造出缺字段记录）；
-          2. 上市标记纠错：清理已越过 N/C 标记窗口的历史脏名称（见 utils.fix_stale_stock_names）。
-
-        Args:
-            stock_dict: 股票代码（不含后缀）→ 名称 的映射字典
         """
-        if not stock_dict:
-            return
-        try:
-            from utils.global_db import get_global_db
-            db = get_global_db()
-            existing = {str(r.get('code')): str(r.get('name') or '')
-                        for r in (db.query('SELECT code, name FROM stock_basic') or [])}
-            changed = 0
-            for code, name in stock_dict.items():
-                code, name = str(code or ''), str(name or '')
-                if not code or not name or code not in existing:
-                    continue                     # 只刷新已存在的代码
-                if existing[code] != name:
-                    db.update('stock_basic', {'name': name}, {'code': code})
-                    changed += 1
-            logger.info(f"股票名称刷新完成: 库内 {len(existing)} 只 / 本次比对 {len(stock_dict)} 只 "
-                        f"/ 更新 {changed} 只")
-            # 清理"已过 N/C 标记窗口"的历史脏名称（静默模式，避免刷日志）
-            try:
-                from utils.fix_stale_stock_names import fix_stale_names
-                n = fix_stale_names(db, verbose=False)
-                if n:
-                    logger.info(f"上市标记名称纠错: {n} 条（N/C 前缀已过期）")
-            except Exception as e:
-                logger.warning(f"上市标记名称纠错失败（忽略）: {e}")
-        except Exception as e:
-            logger.warning(f"刷新股票名称失败（忽略，不影响行情更新）: {e}")
+        保存股票名称到本地文件（已禁用，改为从数据库读取）
+        
+        参数：
+            stock_dict: 股票代码到名称的映射字典
+        """
+        # 不再保存到 stock_names.json 文件
+        # 系统已改为从数据库读取股票名称
+        logger.debug(f"跳过保存股票名称到文件（已改为数据库存储）")
     
     def _fetch_stock_list_http(self) -> dict:
         """
@@ -991,12 +918,8 @@ class StockDataFetcher:
         """
         抓取近期数据用于增量更新（单次请求，不做重试）
 
-<<<<<<< HEAD
         数据源策略：使用 TickFlow 批量接口获取前复权数据。
         不做单只股票重试，由调用方 kline_updater 在批次层做限流控制和重试。
-=======
-        数据源策略：优先 TickFlow 批量接口，失败时自动降级到腾讯财经。
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         参数：
             stock_code: 股票代码
@@ -1005,11 +928,7 @@ class StockDataFetcher:
         返回：
             增量数据DataFrame（前复权数据），失败返回 None
         """
-<<<<<<< HEAD
         # 使用 TickFlow 批量接口获取 K 线数据（前复权）
-=======
-        # 一级数据源：TickFlow 批量接口获取 K 线数据（前复权）
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         try:
             results, api_ok = self._fetch_stock_batch_tickflow([stock_code], days)
             if stock_code in results:
@@ -1017,19 +936,6 @@ class StockDataFetcher:
         except Exception as e:
             logger.debug(f"【增量更新】TickFlow 获取 {stock_code} 失败: {e}")
 
-<<<<<<< HEAD
-=======
-        # 二级数据源：腾讯财经降级获取（前复权）
-        try:
-            years = max(1, days // 250 + 1)
-            df = self._fetch_stock_history_http(stock_code, years=years)
-            if df is not None and len(df) > 0:
-                # 腾讯财经返回全量历史，只取最近 days 天
-                return df.tail(days)
-        except Exception as e:
-            logger.debug(f"【增量更新】腾讯财经获取 {stock_code} 失败: {e}")
-
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return None
 
     def get_stock_market_cap(self, max_retries=3) -> dict:
@@ -1218,19 +1124,11 @@ class StockDataFetcher:
         tf_symbols = [_code_to_tf_symbol(c) for c in stock_codes]
         symbols_str = ",".join(tf_symbols)
 
-<<<<<<< HEAD
         # 确保有足够的缓冲天数
         count = max(days + 10, 60)
 
         # 自适应超时：基础 30s + 每只股票 0.3s（100 只 ≈ 60s）
         timeout = max(15, 30 + len(stock_codes) * 0.3)
-=======
-        # 直接按需要的天数请求，节假日无K线数据无需额外缓冲
-        count = days
-
-        # 自适应超时：基础 15s + 每只股票 0.15s（响应更小，超时随之下调）
-        timeout = max(10, 15 + len(stock_codes) * 0.15)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         url = f"{TICKFLOW_FREE_API}/v1/klines/batch"
         params = {
@@ -1560,37 +1458,12 @@ class StockDataFetcher:
                 else:
                     ts_codes.append(code + '.SZ')
 
-<<<<<<< HEAD
             # 检测需要至少2个交易日数据，如果 start_date == trade_date 则向前扩展一天
             if query_start_date >= trade_date:
                 prev_day = self._get_previous_trading_date(trade_date)
                 if prev_day:
                     query_start_date = prev_day
                     logger.info(f"【除权检测】start_date 与 trade_date 相同，自动扩展至前一交易日: {query_start_date}")
-=======
-            # 确保查询范围至少覆盖 5 个交易日（约一周），保证能获取到多条复权因子记录
-            # Tushare adj_factor 接口仅返回区间内有记录的日期，区间过短可能只有 1 条/股
-            from datetime import datetime, timedelta
-            MIN_TRADING_DAYS = 5
-            expanded = 0
-            ref_dt = datetime.strptime(trade_date, '%Y%m%d')
-            cursor_dt = datetime.strptime(query_start_date, '%Y%m%d')
-            # 向前跳过非交易日并计算交易日数
-            trading_days = 0
-            check_dt = ref_dt
-            while check_dt >= cursor_dt:
-                if check_dt.weekday() < 5:  # 周一到周五
-                    trading_days += 1
-                check_dt -= timedelta(days=1)
-            while trading_days < MIN_TRADING_DAYS:
-                cursor_dt -= timedelta(days=1)
-                if cursor_dt.weekday() < 5:
-                    trading_days += 1
-                    expanded += 1
-            if expanded > 0:
-                query_start_date = cursor_dt.strftime('%Y%m%d')
-                logger.info(f"【除权检测】自动扩展至前一交易日，保证 {MIN_TRADING_DAYS} 个交易日覆盖: {query_start_date}")
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
             # 分批获取复权因子（Tushare adj_factor 接口限制每批最多约500只）
             BATCH_SIZE = 500
@@ -1636,17 +1509,7 @@ class StockDataFetcher:
                 # 按日期排序
                 stock_df = stock_df.sort_values('trade_date', ascending=True).reset_index(drop=True)
 
-<<<<<<< HEAD
                 # 检测整个时间段内的所有变化
-=======
-                # 检测**整个时间段内**的因子变化（2026-09-17 修复）
-                #   ⚠️ 原实现有 `if change_date != trade_date: continue` → 只认目标日**当天**的除权，
-                #   使"检测时间段"（由 last_update ~ target 传入，可能是一个月）形同虚设：
-                #   若更新任务漏跑/中断（节假日、服务未启动、跑在非交易日），区间内发生的除权
-                #   会被永久漏检 → 相关股票历史K线仍停留在旧复权因子基准 → 价格序列出现断层。
-                #   现改为：区间内任一交易日因子变化都算除权，该股票（只登记一次，见下方判断）
-                #   会被 _rebuild_stock_history 整段重建（删库 + 重取 6 年前复权历史）。
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                 stock_factor_changes = []
                 for i in range(1, len(stock_df)):
                     prev_factor = stock_df.iloc[i-1]['adj_factor']

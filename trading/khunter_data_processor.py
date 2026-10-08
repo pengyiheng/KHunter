@@ -433,12 +433,7 @@ class KHunterDataProcessor:
             
             # 5. 调用策略获取择时结果
             # 狩猎场模式：使用当天信号判断（use_prev_day_signal=False）
-<<<<<<< HEAD
             timing_result = strategy.get_timing_result(df_kline, None, None, use_prev_day_signal=False)
-=======
-            # 传入 stock_code 以隔离技术指标缓存，避免不同股票间指标复用
-            timing_result = strategy.get_timing_result(df_kline, None, None, use_prev_day_signal=False, stock_code=stock_code)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             # 6. 判断是否发出买入信号
             if not timing_result.is_buy:
@@ -465,12 +460,7 @@ class KHunterDataProcessor:
                 'turtle': '海龟策略',
                 'rsi': 'RSI策略',
                 'bollinger': '布林带策略',
-<<<<<<< HEAD
                 'support': '支撑位策略'
-=======
-                'support': '支撑位策略',
-                'uptrend_pullback': '趋势回调缩量策略'
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             }.get(timing_strategy_name, timing_strategy_name)
             
             # 10. 计算买入区间（当前价格±1%）

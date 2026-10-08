@@ -45,11 +45,7 @@ class SupportStrategy(TimingStrategy):
         
         return result
     
-<<<<<<< HEAD
     def get_timing_result(self, df: pd.DataFrame, position: Optional[Dict] = None, cash: Optional[float] = None, use_prev_day_signal: bool = True) -> TimingResult:
-=======
-    def get_timing_result(self, df: pd.DataFrame, position: Optional[Dict] = None, cash: Optional[float] = None, use_prev_day_signal: bool = True, stock_code: str = "") -> TimingResult:
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """获取支撑位策略择时结果
 
         Args:
@@ -59,10 +55,6 @@ class SupportStrategy(TimingStrategy):
             use_prev_day_signal: 是否使用前一天信号
                 - True: 回测模式，使用T-1日信号K线判断（信号K线=DF.iloc[-2]，执行日=DF.iloc[-1]）
                 - False: 狩猎场模式，使用T日信号K线判断（信号K线=DF.iloc[-1]）
-<<<<<<< HEAD
-=======
-            stock_code: 股票代码（用于指标缓存隔离）
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         Returns:
             择时结果
@@ -74,21 +66,11 @@ class SupportStrategy(TimingStrategy):
                 return result
             signal_bar = df.iloc[-2]
             latest_bar = df.iloc[-1]
-<<<<<<< HEAD
         else:
             signal_bar = df.iloc[-1]
             latest_bar = df.iloc[-1]
 
         support_level = self.calculate_support(df)
-=======
-            # 回测模式：支撑位只用截止T-1日的数据计算，避免使用T日收盘价（前视偏差）
-            support_level = self.calculate_support(df.iloc[:-1])
-        else:
-            signal_bar = df.iloc[-1]
-            latest_bar = df.iloc[-1]
-            # 狩猎场模式：使用全部数据（含T日）计算支撑位
-            support_level = self.calculate_support(df)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         result.support_level = support_level
 
         current_price = signal_bar['close']
@@ -121,7 +103,6 @@ class SupportStrategy(TimingStrategy):
                 current_date_str = latest_bar['date']
                 if isinstance(current_date_str, str):
                     current_date = datetime.datetime.strptime(current_date_str, '%Y-%m-%d').date()
-<<<<<<< HEAD
                 else:
                     current_date = current_date_str
 
@@ -130,30 +111,6 @@ class SupportStrategy(TimingStrategy):
                     result.is_sell = True
                     result.signal_strength = 0.8
                     result.message = f"持有{hold_days}天，卖出信号"
-=======
-                elif isinstance(current_date_str, pd.Timestamp):
-                    current_date = current_date_str.date()
-                else:
-                    current_date = current_date_str
-
-                # ★【2026-09-28 用户要求 ✓】**统一改为交易日** ✗→✓
-                #   原为 `(current_date − buy_date).days` ✗ = **日历天** ⇒ 跨周末/假期会
-                #   **提前**触发"持有期满"卖出 ✗（实测口径差：`2025-12-31` 买入 →
-                #   `2026-01-05` 检查 ⇒ 旧 **5** ✗ vs 新 **1** ✓）。
-                #   用**本股 K 线日期序列** ✓（= 该股交易日 ✓，随 `df` 传入 ✓）⇒ **零联网** ✓。
-                from utils.trade_date_utils import count_trading_days_between
-                _seq = None
-                try:
-                    if 'date' in df.columns:
-                        _seq = [str(x)[:10] for x in df['date'].tolist()]
-                except Exception:
-                    _seq = None
-                hold_days = count_trading_days_between(buy_date, current_date, _seq)
-                if hold_days >= 10:
-                    result.is_sell = True
-                    result.signal_strength = 0.8
-                    result.message = f"持有{hold_days}交易日，卖出信号"
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
                     result.trade_type = 'sell'
                     result.sell_quantity = position.get('quantity', 0)
 

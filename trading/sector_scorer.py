@@ -141,7 +141,8 @@ class SectorScorer:
         self._pro = None
         # 初始化内存缓存
         self._cache = MemoryCache()
-        # 【2026-09-28 减噪 ✗→✓】原"板块强度评分器初始化完成"✗ 为每实例零信息量日志 ⇒ 删除 ✓。
+        # 记录初始化日志
+        logger.info("板块强度评分器初始化完成")
 
     def _load_tushare_token(self) -> str:
         """
@@ -156,8 +157,7 @@ class SectorScorer:
                 config = json.load(f)
             # 优先使用 token 字段，兼容 api_key 字段
             token = config.get("token") or config.get("api_key", "")
-            # 【2026-09-28 减噪 ✗→✓】"Tushare token 加载成功"为每实例零信息量日志 ⇒ 删除 ✓
-            #   （读取失败仍走下方 warning ✓）
+            logger.debug("Tushare token 加载成功")
             return token
         except Exception as e:
             # 配置文件读取失败，返回空字符串
@@ -278,27 +278,20 @@ class SectorScorer:
     # 数据获取方法
     # ============================================================
 
-    def _get_stock_sectors(
-        self, stock_code: str, score_date: str = None
-    ) -> List[dict]:
+    def _get_stock_sectors(self, stock_code: str) -> List[dict]:
         """
         获取个股所属板块列表
 
         通过 Tushare ths_member 接口查询个股所属板块代码，
         再通过 ths_index 接口获取板块名称。
 
-        注意：ths_member 接口不支持历史查询，板块成分可能随时间变化。
-        缓存键包含评分日期以区分不同回测日期的缓存。
-
         参数:
             stock_code: 股票代码（6位数字）
-            score_date: 评分日期（YYYYMMDD 格式），用于缓存键区分
         返回:
             List[dict]: 板块列表，每个元素包含 ts_code 和 name
         """
-        # 构建缓存键（包含评分日期，区分回测缓存）
-        date_suffix = f"_{score_date}" if score_date else ""
-        cache_key = f"stock_sectors_{stock_code}{date_suffix}"
+        # 构建缓存键
+        cache_key = f"stock_sectors_{stock_code}"
         # 检查缓存
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -710,8 +703,8 @@ class SectorScorer:
         # 预加载所有需要的板块数据（减少API调用）
         self._preload_sector_data(dates)
 
-        # 获取个股所属板块列表（传评分日期用于缓存键区分）
-        sectors = self._get_stock_sectors(stock_code, score_date=formatted_date)
+        # 获取个股所属板块列表
+        sectors = self._get_stock_sectors(stock_code)
         if not sectors:
             # 无板块映射，返回 0 分
             logger.warning(f"个股无板块映射: {stock_code}")

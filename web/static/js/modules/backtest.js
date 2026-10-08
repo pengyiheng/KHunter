@@ -14,17 +14,11 @@ let backtestConfig = {
     support_level_method: 'ma20',
     timing_strategy: 'support',
     timing_params: {
-<<<<<<< HEAD
         turtle: {
             n_entry: 6,
             n_exit: 6,
             atr_period: 6
         },
-=======
-        // 【2026-09-23】海龟类参数统一由后端读取 yaml（唯一配置源 ✓），此处不再硬编码 ✗：
-        //   原 `turtle: {n_entry: 6, n_exit: 6, atr_period: 6}` ✗ 会在请求里**覆盖**后端配置 ✗，
-        //   导致单次回测的海龟参数与批量回测/实盘不一致 ✗（典型的"配置漂移"来源 ✓）。
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         rsi: {
             overbought: 70,
             oversold: 30,
@@ -319,107 +313,6 @@ async function saveBacktestParams() {
             buy_amount: parseFloat(buyAmountInput?.value) || 100000,
             max_daily_buys: parseInt(maxDailyBuysInput?.value) || 5
         };
-
-        // 【2026-09-27 新增】模式与开关 ✓（写入 `config/backtest_engine_config.yaml` ✓）
-        //   选「跟随回测模式」（空值 ✓）⇒ 发送 **null** ✓
-        //   ⇒ 后端会把这些键**还原为注释** ✓✓（不再覆盖模式预设 ✓）
-        const modeEl = document.getElementById('params-backtest-mode');
-        const poolModeEl = document.getElementById('params-pool-entry-mode');
-        // ⚠️ 控件 id 一律 = **键名派生** ✓（`params-` + 键名 `_`→`-` ✓）⇒ 见
-        //   `test_backtest_config_store.py::TestExtraKeysAllHaveFrontendControls` ✓
-        //   （穷尽校验"每个白名单键都有控件"✓，防再犯"加了键没加控件"✗）。
-        const addRiseEl = document.getElementById('params-enable-add-open-rise-check');
-        if (modeEl) params.backtest_mode = modeEl.value || null;
-        if (poolModeEl) params.pool_entry_mode = poolModeEl.value || null;
-        if (addRiseEl) {
-            params.enable_add_open_rise_check = (addRiseEl.value === '')
-                ? null : (addRiseEl.value === 'true');
-        }
-        // ★【2026-09-29 用户要求 ✓】"不开新仓 ⇒ 跳过选股"开关 ✗→✓
-        //   空值 ⇒ 发 **null** ⇒ 后端把该键**还原为注释** ✓ = 走代码默认（**开启** ✓）
-        //   ⇒ 不显式覆盖 ✓（与其它"跟随模式预设"的键同一处理 ✓）
-        const skipSelEl = document.getElementById('params-skip-selection-when-no-new-position');
-        if (skipSelEl) {
-            params.skip_selection_when_no_new_position = (skipSelEl.value === '')
-                ? null : (skipSelEl.value === 'true');
-        }
-        // ★★【2026-09-29 用户要求 ✓】**高级参数（ADX 口径 / 大盘仓位上限）** ✗→✓
-        //   动机 ✗✓（用户："没有看到前端设置的地方"✗）：这些键此前**只有后端白名单** ✗、
-        //     前端**零控件** ✗ ⇒ 只能手改 yaml ✗。
-        //   统一口径 ✓：**留空 ⇒ 发 null** ⇒ 后端把该键**还原为注释** ✓ = 走模式预设/代码默认 ✓；
-        //     ⚠️ 空值**绝不能**变成 0 / [] ✗✓（那是"**显式**改掉默认行为"✗）。
-        //   ⚠️ 控件缺失（旧页面缓存 ✓）⇒ **整个块跳过** ✓（不发这些键 ✗，绝不清空用户配置 ✗✓）。
-        const advEl = document.getElementById('params-advanced');
-        if (advEl) {
-            const _blank = (id) => {
-                const el = document.getElementById(id);
-                if (!el) return undefined;
-                const v = (el.value === null || el.value === undefined)
-                    ? '' : String(el.value).trim();
-                return v === '' ? null : v;
-            };
-            const _num = (id) => {
-                const v = _blank(id);
-                if (v === undefined || v === null) return v;
-                const n = Number(v);
-                return Number.isFinite(n) ? n : null;   // 非法输入 ⇒ 当"未填"✓（绝不写坏值 ✗）
-            };
-            const _bool = (id) => {
-                const v = _blank(id);
-                return (v === 'true') ? true : (v === 'false' ? false : v);
-            };
-            params.enable_stock_adx_filter = _bool('params-enable-stock-adx-filter');
-            params.adx_entry_mode = _blank('params-adx-entry-mode');
-            params.adx_dir_mode = _blank('params-adx-dir-mode');
-            // ★★【2026-09-30 用户要求 ✓】个股放行新增「`close(T-1) > MA20`」✗→✓
-            //   ⚠️ **只约束首仓** ✗✓（加仓不判 ✓ —— 加仓只看 `dir=上升` ✓）
-            //   留空 ⇒ **null** ⇒ 后端把该键**还原为注释** ✓ = 走默认（开启 ✓ / MA20 ✓）
-            params.adx_entry_require_above_ma = _bool('params-adx-entry-require-above-ma');
-            params.adx_entry_ma_period = _num('params-adx-entry-ma-period');
-            // ★★【2026-10-04 用户要求 ✓】**加仓也判** `close(T-1) > MA20`（用户答"需要" ✓）
-            //   ⚠️ **独立开关** ✗✓（与首仓分开 ⇒ 可各自 A/B、各自回退 ✓）；
-            //     关掉 ⇒ 加仓回到 2026-09-29 口径（只看 `dir=上升` ✓）
-            params.adx_add_require_above_ma = _bool('params-adx-add-require-above-ma');
-            const _lo = _num('params-adx-range-lo');
-            const _hi = _num('params-adx-range-hi');
-            const _lo2 = _num('params-adx-range2-lo');
-            const _hi2 = _num('params-adx-range2-hi');
-            // ★【2026-09-29 用户要求 ✓】**两段并集** ✓（口径：`ADX<18 ∪ 23<ADX<42` ✓）
-            //   ⚠️ 每段**两个都填**才算该段有效 ✓（只填一个 ⇒ **忽略该段** ✓，避免半套区间 ✗）；
-            //   ⚠️ 两段都空 ⇒ 发 **null** ✓（后端还原为注释 ✓ = 走默认单段 ✓，**旧行为完整保留** ✓）；
-            //   ⚠️ 保存格式：**扁平偶数个** ✓（`[0,18,23,42]` ✓ = 两两成段 ✓，后端按此解析 ✓）。
-            const _rng = [];
-            if (_lo !== null && _hi !== null) _rng.push(_lo, _hi);
-            if (_lo2 !== null && _hi2 !== null) _rng.push(_lo2, _hi2);
-            params.adx_entry_range = _rng.length ? _rng : null;
-            const _bandsEl = document.getElementById('params-adx-entry-bands');
-            const _picked = _bandsEl
-                ? Array.from(_bandsEl.selectedOptions).map((o) => o.value) : [];
-            params.adx_entry_bands = _picked.length ? _picked : null;
-            params.index_adx_code = _blank('params-index-adx-code');
-            params.index_adx_dir_mode = _blank('params-index-adx-dir-mode');
-            params.enable_index_position_cap = _bool('params-enable-index-position-cap');
-            params.index_cap_high_adx = _num('params-index-cap-high-adx');
-            params.index_cap_high_ratio = _num('params-index-cap-high-ratio');
-            params.index_cap_low_adx = _num('params-index-cap-low-adx');
-            params.index_cap_low_ratio = _num('params-index-cap-low-ratio');
-            params.index_cap_other_ratio = _num('params-index-cap-other-ratio');
-            // ★★【2026-09-30 用户要求 ✓】规则2 **附加条件**（`ADX<18` 时还须**收盘 > MA20** ✓）
-            //   留空 ⇒ **null** ⇒ 后端把该键**还原为注释** ✓ = 走代码默认（**开启** ✓）
-            //   ⚠️ `false` 必须原样发 ✗（别用 `||` 兜底 ⇒ 会被当空值吞掉 ✗）
-            params.index_cap_low_require_above_ma =
-                _bool('params-index-cap-low-require-above-ma');
-            params.index_cap_ma_period = _num('params-index-cap-ma-period');
-            // ★★【2026-10-05 用户要求 ✓】**板块回退**（全A 不放行 ⇒ 看科创板/创业板 ✓）
-            //   留空 ⇒ null ⇒ 后端把该键**还原为注释** ✓ = 走代码默认（**开启** ✓ / 两个默认代码 ✓）
-            //   ⚠️ `false` 必须原样发 ✗（别用 `||` 兜底 ⇒ 会被当空值吞掉 ✗）
-            //   ★ 同日口径二次调整 ✓："**双创同时放行 ⇒ 整体不放行**" ✓ 在**后端判定层** ✓
-            //     ⇒ **前端无需改动** ✗✓（也不新增控件 ✓）
-            params.index_cap_board_fallback =
-                _bool('params-index-cap-board-fallback');
-            params.index_cap_star_code = _blank('params-index-cap-star-code');
-            params.index_cap_chinext_code = _blank('params-index-cap-chinext-code');
-        }
         
         // 调用后端API保存配置
         const response = await fetch('/api/trading/backtest/configs', {
@@ -436,12 +329,7 @@ async function saveBacktestParams() {
         
         const data = await response.json();
         if (data.success) {
-            // ★【2026-09-29 用户提问 ✓】"改这些参数要不要重启服务？" ⇒ **不用** ✓
-            //   `save()` 写成功后会**自动清掉进程内的 yaml 缓存** ✓
-            //   （`utils/backtest_mode.clear_engine_yaml_cache()` ✓，见 `backtest_config_store.py` ✓）
-            //   ⇒ 下一轮回测/实盘**立刻**按新值判定 ✓。
-            //   ⚠️ 唯一例外 ✓：**正在跑**的任务在启动时已快照参数 ✓ ⇒ 它按旧值跑完 ✓（下一轮生效 ✓）。
-            alert('回测配置保存成功（已即时生效，无需重启服务；正在运行的任务下一轮生效）');
+            alert('回测配置保存成功');
         } else {
             throw new Error(data.message || '保存回测配置失败');
         }
@@ -483,119 +371,6 @@ async function loadBacktestParams() {
             if (stopLossInput) stopLossInput.value = (params.stop_loss || -5) / 100; // 转换为小数
             if (takeProfitInput) takeProfitInput.value = (params.take_profit || 15) / 100; // 转换为小数
             if (maxHoldDaysInput) maxHoldDaysInput.value = params.hold_period || 10;
-
-            // 【2026-09-27 新增】模式与开关回填 ✓
-            //   ⚠️ `false` 不能用 `||` 兜底 ✗（会被当成空值 ✗）⇒ 用 `=== true/false` 显式判断 ✓
-            const modeSel = document.getElementById('params-backtest-mode');
-            const poolSel = document.getElementById('params-pool-entry-mode');
-            // ★★【2026-10-05 修复 ✓】**控件 id 写错 ⇒ 该下拉永远不回填** ✗→✓ ★★
-            //   事故 ✗✓（用户反馈："回测参数保存不成功"✓ 同一类症状 ✓）：
-            //     这里原本写的 id 是 `params-add-open-rise` ✗，而模板里真实的 id 是
-            //     `params-enable-add-open-rise-check` ✓（= `params-` + **键名** ✓）⇒
-            //     `getElementById` 恒为 `null` ⇒ `if (riseSel)` 恒假 ✗
-            //     ⇒ **保存后重新进页面，该下拉永远显示默认「跟随回测模式」** ✗
-            //     （而保存侧用的是**正确** id ✓ ⇒ 值其实写进 yaml 了 ✓
-            //       ⇒ 表现为"看着没保存"✗✓ —— 与 `backtest_mode` 那次同一坑 ✓）。
-            //   ⚠️ 约定 ✓：控件 id **一律 = `params-` + 键名（`_`→`-`）** ✗✓ ——
-            //     `test_backtest_config_store.py::TestExtraKeysAllHaveFrontendControls` 守着"有控件"✓，
-            //     但**守不住"JS 读的 id 与控件 id 一致"** ✗ ⇒ 故这里按约定修正 ✓。
-            const riseSel = document.getElementById('params-enable-add-open-rise-check');
-            if (modeSel) modeSel.value = params.backtest_mode || 'legacy';
-            // ★【2026-09-29】新增 `direct`（直通入池 ✓）⇒ 回填白名单**同步扩上** ✗→✓
-            //   （否则选了 direct 保存后再进页面 ⇒ 下拉回落"跟随回测模式"✗，看着像没保存 ✗）
-            if (poolSel) poolSel.value = ['veto_only', 'scored', 'direct']
-                .includes(params.pool_entry_mode) ? params.pool_entry_mode : '';
-            if (riseSel) {
-                riseSel.value = (params.enable_add_open_rise_check === true) ? 'true'
-                    : (params.enable_add_open_rise_check === false ? 'false' : '');
-            }
-            // ★【2026-09-29 用户要求 ✓】跳过选股开关回填 ✓
-            //   ⚠️ `false` **不能**用 `||` 兜底 ✗（会被当成空值 ✗）⇒ 显式判 `=== true/false` ✓；
-            //   yaml 里没写（= 默认 ✓）⇒ 后端**不会**返回该键 ⇒ 回落空值（未显式设置 ✓）。
-            const skipSel = document.getElementById('params-skip-selection-when-no-new-position');
-            if (skipSel) {
-                skipSel.value = (params.skip_selection_when_no_new_position === true) ? 'true'
-                    : (params.skip_selection_when_no_new_position === false ? 'false' : '');
-            }
-            // ★★【2026-09-29 用户要求 ✓】**高级参数回填** ✗→✓（与保存侧**逐键对应** ✓）
-            //   ⚠️ `false` / `0` **不能**用 `||` 兜底 ✗（会被当成空值 ✗）⇒ 一律显式判类型 ✓；
-            //   yaml 里没写（= 走默认 ✓）⇒ 后端**不会**返回该键 ⇒ 回落空值（未显式设置 ✓）。
-            const advElL = document.getElementById('params-advanced');
-            if (advElL) {
-                const _setSel = (id, v) => {
-                    const el = document.getElementById(id);
-                    if (el) el.value = (v === null || v === undefined) ? '' : String(v);
-                };
-                const _setBoolSel = (id, v) => {
-                    const el = document.getElementById(id);
-                    if (el) {
-                        el.value = (v === true) ? 'true' : (v === false ? 'false' : '');
-                    }
-                };
-                const _setNum = (id, v) => {
-                    const el = document.getElementById(id);
-                    if (el) {
-                        el.value = (typeof v === 'number' && Number.isFinite(v)) ? v : '';
-                    }
-                };
-                _setBoolSel('params-enable-stock-adx-filter', params.enable_stock_adx_filter);
-                _setSel('params-adx-entry-mode', params.adx_entry_mode);
-                _setSel('params-adx-dir-mode', params.adx_dir_mode);
-                // ★【2026-09-30】个股放行 MA 条件回填 ✓（`false` 显式判 ✓ 不用 `||` ✗）
-                _setBoolSel('params-adx-entry-require-above-ma',
-                    params.adx_entry_require_above_ma);
-                // ★【2026-10-04】加仓独立开关回填 ✓（`false` 显式判 ✓ 不用 `||` ✗）
-                _setBoolSel('params-adx-add-require-above-ma',
-                    params.adx_add_require_above_ma);
-                _setNum('params-adx-entry-ma-period', params.adx_entry_ma_period);
-                // ⚠️ 区间键：**四个输入同属一键** ✗✓（容器 id = 键名派生 ✓）
-                //   ★【2026-09-29】兼容**三种**存储形态 ✓：扁平 `[0,18,23,42]` ✓ /
-                //     嵌套 `[[0,18],[23,42]]` ✓ / 单段 `[21,30]` ✓（旧值 ✓）
-                const _rngWrap = document.getElementById('params-adx-entry-range');
-                if (_rngWrap) {
-                    const _arr = Array.isArray(params.adx_entry_range)
-                        ? params.adx_entry_range : [];
-                    const _segs = (typeof _arr[0] === 'object' && _arr[0] !== null)
-                        ? _arr.map((r) => [r[0], r[1]])          // 嵌套 ✓
-                        : (() => {                               // 扁平 ✓（两两成对）
-                            const out = [];
-                            for (let i = 0; i + 1 < _arr.length; i += 2) {
-                                out.push([_arr[i], _arr[i + 1]]);
-                            }
-                            return out;
-                        })();
-                    _setNum('params-adx-range-lo', _segs[0] && _segs[0][0]);
-                    _setNum('params-adx-range-hi', _segs[0] && _segs[0][1]);
-                    _setNum('params-adx-range2-lo', _segs[1] && _segs[1][0]);
-                    _setNum('params-adx-range2-hi', _segs[1] && _segs[1][1]);
-                }
-                const _bandsElL = document.getElementById('params-adx-entry-bands');
-                if (_bandsElL) {
-                    const _want = Array.isArray(params.adx_entry_bands)
-                        ? params.adx_entry_bands.map(String) : [];
-                    Array.from(_bandsElL.options).forEach((o) => {
-                        o.selected = _want.includes(o.value);
-                    });
-                }
-                _setSel('params-index-adx-code', params.index_adx_code);
-                _setSel('params-index-adx-dir-mode', params.index_adx_dir_mode);
-                _setBoolSel('params-enable-index-position-cap', params.enable_index_position_cap);
-                _setNum('params-index-cap-high-adx', params.index_cap_high_adx);
-                _setNum('params-index-cap-high-ratio', params.index_cap_high_ratio);
-                _setNum('params-index-cap-low-adx', params.index_cap_low_adx);
-                _setNum('params-index-cap-low-ratio', params.index_cap_low_ratio);
-                _setNum('params-index-cap-other-ratio', params.index_cap_other_ratio);
-                // ★【2026-09-30】规则2 附加条件回填 ✓（`false` 显式判 ✓ 不用 `||` ✗）；
-                //   yaml 里没写（= 默认开启 ✓）⇒ 后端**不返回该键** ⇒ 回落空值 ✓
-                _setBoolSel('params-index-cap-low-require-above-ma',
-                    params.index_cap_low_require_above_ma);
-                _setNum('params-index-cap-ma-period', params.index_cap_ma_period);
-                // ★【2026-10-05】板块回退三键回填 ✓（`false` 显式判 ✓ 不用 `||` ✗）
-                _setBoolSel('params-index-cap-board-fallback',
-                    params.index_cap_board_fallback);
-                _setSel('params-index-cap-star-code', params.index_cap_star_code);
-                _setSel('params-index-cap-chinext-code', params.index_cap_chinext_code);
-            }
         }
     } catch (error) {
         console.error('加载回测配置失败:', error);
@@ -748,7 +523,7 @@ async function runBacktest() {
                 // 如果没有交易记录，显示空状态
                 const tradesBody = document.getElementById('backtest-trades-body');
                 if (tradesBody) {
-                    tradesBody.innerHTML = '<tr><td colspan="9" class="text-center">暂无交易记录</td></tr>';
+                    tradesBody.innerHTML = '<tr><td colspan="6" class="text-center">暂无交易记录</td></tr>';
                 }
             }
         } else {
@@ -809,19 +584,10 @@ function displayBacktestResult(result) {
     // 择时策略中文名称映射
     const timingStrategyNames = {
         'turtle': '海龟策略',
-<<<<<<< HEAD
         'rsi': 'RSI策略',
         'bollinger': '布林带策略',
         'support': '支撑位策略',
         'macd_bollinger': '顺势宝'
-=======
-        'turtle_plus': '海龟plus',
-        'rsi': 'RSI策略',
-        'bollinger': '布林带策略',
-        'support': '支撑位策略',
-        'macd_bollinger': '顺势宝',
-        'uptrend_pullback': '趋势回调缩量策略'
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     };
     
     // 获取择时策略显示名称
@@ -1036,19 +802,10 @@ function displayBacktestHistory(results) {
     // 择时策略中文名称映射
     const timingStrategyNames = {
         'turtle': '海龟策略',
-<<<<<<< HEAD
         'rsi': 'RSI策略',
         'bollinger': '布林带策略',
         'support': '支撑位策略',
         'macd_bollinger': '顺势宝'
-=======
-        'turtle_plus': '海龟plus',
-        'rsi': 'RSI策略',
-        'bollinger': '布林带策略',
-        'support': '支撑位策略',
-        'macd_bollinger': '顺势宝',
-        'uptrend_pullback': '趋势回调缩量策略'
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
     };
     
     const historyBody = document.getElementById('backtest-history-body');
@@ -1333,62 +1090,13 @@ function displayBacktestResultInModal(result) {
                 </div>
             </div>
             
-            ${result.params_snapshot ? `
-            <!-- ★★【2026-10-03 用户要求 ✓】本次回测的「**主要参数设置情况**」 ✗→✓
-                 来源 ✓：trading/backtest_engine.py::build_param_snapshot ✓
-                   ⇒ 与「回测参数」日志**同一份** ✓（日志里看到的 = 这里显示的 ✓）；
-                 为什么要看它 ✗✓：两次回测收益不同时，**先看这里**就能定位
-                   "是哪项参数变了" ✓（此前只能翻日志 + 手查 yaml ✗✓）。
-                 ⚠️ timing_params 单独补打 ✗✓ —— 海龟参数（n_entry / n_exit / atr_period ✓）
-                   不在文本快照里 ✓，但它恰恰是最常被调的一项 ✗。
-                 ⚠️【2026-10-04 修复 ✓】**本注释内严禁反引号** ✗✓ —— 本块位于**模板字符串**
-                   内部 ✗（外层是反引号包裹的 HTML 串 ✓），而反引号会**提前结束模板串** ✗
-                   ⇒ 整个模块**语法错误** ✗ ⇒ 浏览器报「加载模块失败，请刷新页面重试」✗✓
-                   （实测发生 ✓）。⇒ 以后此块注释请用普通文字 ✓
-                   （旁边 router_config 那块同样没有反引号 ✓）。 -->
-            <div class="card" style="margin-bottom: 20px;">
-                <div class="card-header">
-                    <h3>本次回测的参数设置</h3>
-                </div>
-                <div class="card-body">
-                    <pre style="white-space: pre-wrap; margin: 0; font-size: 13px; line-height: 1.8; color: #334155; font-family: inherit;">${(() => {
-                        try {
-                            const s = JSON.parse(result.params_snapshot);
-                            const tp = (s.timing_params && Object.keys(s.timing_params).length)
-                                ? ('\n\n择时策略: ' + (s.timing_strategy || '-')
-                                   + '\n择时参数: ' + JSON.stringify(s.timing_params, null, 2))
-                                : '';
-                            return String(s.text || result.params_snapshot) + tp;
-                        } catch (e) {
-                            return String(result.params_snapshot);
-                        }
-                    })().replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
-                </div>
-            </div>` : ''}
-
-            ${result.router_config ? `
-            <!-- 选股/择时条件（各档位配置）——自适应回测保存时持久化 -->
-            <div class="card" style="margin-bottom: 20px;">
-                <div class="card-header">
-                    <h3>选股/择时条件（各档位配置）</h3>
-                </div>
-                <div class="card-body">
-                    <pre style="white-space: pre-wrap; margin: 0; font-size: 13px; line-height: 1.8; color: #334155; font-family: inherit;">${String(result.router_config).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
-                </div>
-            </div>` : ''}
-            
             <!-- 收益曲线图表 -->
             <div class="card" style="margin-bottom: 20px;">
                 <div class="card-header">
                     <h3>收益曲线</h3>
                 </div>
                 <div class="card-body">
-                    <!-- 【2026-09-20】Chart.js 标准写法：外层固定高度定位容器。
-                         原为 canvas 内联 height（只改显示盒、不改绘制缓冲）→ 父容器高度自适应
-                         时画布缓冲为 0 → 图表一片空白。 -->
-                    <div style="position:relative; height:300px; width:100%;">
-                        <canvas id="modal-backtest-equity-chart"></canvas>
-                    </div>
+                    <canvas id="modal-backtest-equity-chart" style="height: 300px;"></canvas>
                 </div>
             </div>
         `;
@@ -1662,8 +1370,7 @@ function drawEquityChart(capitalHistory, dates) {
     
     // 创建新图表
     try {
-        if (!window.Chart) { throw new Error('图表库(Chart.js)未加载'); }
-        window.equityChart = new window.Chart(ctx, {
+        window.equityChart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: labels,
@@ -1716,52 +1423,7 @@ function drawEquityChart(capitalHistory, dates) {
  * @param {Array} capitalHistory - 资金历史
  * @param {Array} dates - 日期列表
  */
-function _backtestChartHint() {
-    const box = document.getElementById('modal-backtest-results-container');
-    if (!box || document.getElementById('backtest-chart-hint')) return;
-    const div = document.createElement('div');
-    div.id = 'backtest-chart-hint';
-    div.className = 'card';
-    div.style.marginBottom = '20px';
-    div.innerHTML = '<div class="card-header"><h3>收益曲线</h3></div>'
-        + '<div class="card-body" style="color:#b45309;font-size:13px;">'
-        + '⚠️ 图表库（Chart.js）未加载。项目已内置本地副本（无需联网），'
-        + '请按 <b>F5</b> 重新加载页面；其余回测数据不受影响。</div>';
-    box.appendChild(div);
-}
-
 function drawEquityChartInModal(capitalHistory, dates) {
-    // 【2026-09-20 修复】Chart.js 由 CDN 引入，若未加载/被网络阻断，
-    //   原实现用裸标识符 `new Chart(...)` 会抛 "Chart is not defined" →
-    //   被 loadBacktestResultInModal 的 try 兜住 → 整个详情报"加载回测结果失败"。
-    //   现：改用 window.Chart（ES 模块下更稳妥）+ 缺库时只提示、不阻断详情加载。
-    if (!window.Chart) {
-        // 【2026-09-20】自愈：缺库时动态加载**项目内置**的本地 Chart.js，加载完成后重绘本图。
-        //   注意：不依赖 dashboard_stats.js（可能未加载或未更新），此处自带加载逻辑，
-        //   因此只要页面重新加载过（F5）就一定能画出来，且**无需联网**。
-        if (window.ensureChartJs) {
-            window.ensureChartJs(function () { drawEquityChartInModal(capitalHistory, dates); });
-            return;
-        }
-        if (!window.__backtestChartLoading) {
-            window.__backtestChartLoading = true;
-            const s = document.createElement('script');
-            s.src = '/static/js/lib/chart.umd.min.js';
-            s.onload = function () {
-                window.__backtestChartLoading = false;
-                if (window.Chart) {
-                    drawEquityChartInModal(capitalHistory, dates);   // 加载成功 → 重绘
-                } else {
-                    _backtestChartHint();
-                }
-            };
-            s.onerror = function () { window.__backtestChartLoading = false; _backtestChartHint(); };
-            document.head.appendChild(s);
-            return;
-        }
-        _backtestChartHint();
-        return;
-    }
     const ctx = document.getElementById('modal-backtest-equity-chart');
     if (!ctx) {
         // 如果模态框中没有图表元素，添加一个
@@ -1773,22 +1435,14 @@ function drawEquityChartInModal(capitalHistory, dates) {
                         <h3>收益曲线</h3>
                     </div>
                     <div class="card-body">
-                        <!-- 【2026-09-20】同上：固定高度定位容器（否则画布缓冲为 0 → 图表空白） -->
-                        <div style="position:relative; height:300px; width:100%;">
-                            <canvas id="modal-backtest-equity-chart"></canvas>
-                        </div>
+                        <canvas id="modal-backtest-equity-chart" style="height: 300px;"></canvas>
                     </div>
                 </div>
             `;
         }
     }
     
-    const _canvasEl = document.getElementById('modal-backtest-equity-chart');
-    if (!_canvasEl) {   // 【2026-09-20】兜底：画布不存在时不再抛错中断整个详情加载
-        console.warn('[回测详情] 未找到收益曲线画布，跳过绘制');
-        return;
-    }
-    const chartCtx = _canvasEl.getContext('2d');
+    const chartCtx = document.getElementById('modal-backtest-equity-chart').getContext('2d');
     
     // 销毁旧图表
     if (window.modalEquityChart) {
@@ -1809,8 +1463,8 @@ function drawEquityChartInModal(capitalHistory, dates) {
         return ((capital - initialCapital) / initialCapital) * 100;
     });
     
-    // 创建新图表（window.Chart：ES 模块下避免裸标识符解析问题）
-    window.modalEquityChart = new window.Chart(chartCtx, {
+    // 创建新图表
+    window.modalEquityChart = new Chart(chartCtx, {
         type: 'line',
         data: {
             labels: labels,
@@ -1883,23 +1537,6 @@ async function loadBacktestTradesOnConfigPage(resultId) {
  * 在策略回测页面显示交易记录
  * @param {Array} trades - 交易记录数组
  */
-function _tradeTypeLabel(tradeType, sellType) {
-    // ★【2026-09-29 用户要求 ✓】交易类型**中文化** ✗→✓（自适应那份直接打英文 `normal/sell` ✗）
-    //   口径 ✓：先看 `trade_type`（`new`=建仓 / `add`=加仓 / `sell`=清仓 / `reduce`=减仓 ✓），
-    //   再看 `sell_type`（卖出原因 ✓，如 `stop_loss` / `take_profit` ✓）；
-    //   ⚠️ **认不出就原样显示** ✓（绝不伪造语义 ✗），空值显示 `-` ✓。
-    const MAP = {
-        new: '建仓', add: '加仓', sell: '清仓', reduce: '减仓',
-        stop_loss: '止损', take_profit: '止盈', time_exit: '到期',
-        pool_remove: '池移除', normal: '普通卖出', final: '期末平仓',
-    };
-    const t = String(tradeType || '').trim();
-    const s = String(sellType || '').trim();
-    if (t && MAP[t]) return MAP[t];
-    if (s && MAP[s]) return MAP[s];
-    return (t || s || '-');
-}
-
 function displayBacktestTradesOnConfigPage(trades) {
     const tradesBody = document.getElementById('backtest-trades-body');
     if (!tradesBody) {
@@ -1910,13 +1547,12 @@ function displayBacktestTradesOnConfigPage(trades) {
     // 检查trades是否为有效的数组
     if (!Array.isArray(trades)) {
         console.warn('交易记录不是数组:', trades);
-        tradesBody.innerHTML = '<tr><td colspan="9" class="text-center">交易记录格式错误</td></tr>';
+        tradesBody.innerHTML = '<tr><td colspan="6" class="text-center">交易记录格式错误</td></tr>';
         return;
     }
     
     if (trades.length === 0) {
-        // ★【2026-09-29】`colspan` 必须与**表头列数**一致 ✗✓（表头 9 列 ✓ ⇒ 否则空态行错位 ✗）
-        tradesBody.innerHTML = '<tr><td colspan="9" class="text-center">暂无交易记录</td></tr>';
+        tradesBody.innerHTML = '<tr><td colspan="6" class="text-center">暂无交易记录</td></tr>';
     } else {
         try {
             tradesBody.innerHTML = trades.map(trade => {
@@ -1925,16 +1561,7 @@ function displayBacktestTradesOnConfigPage(trades) {
                 const stockName = trade.stock_name || '-';
                 const buyDate = trade.buy_date || '-';
                 const sellDate = trade.sell_date || '-';
-                // ★【2026-09-29】`0` **不能**被 `||` 吞掉 ✗✓（持有 0 日 = 当日买当日卖 ✓ 是真值 ✓）
-                const holdDays = (trade.hold_days === null || trade.hold_days === undefined)
-                    ? '-' : trade.hold_days;
-                // ★【2026-09-29 用户要求 ✓】新增三列 ✓（照自适应那份 ✓）：
-                //   买入价格 / 卖出价格 / 交易类型 ✓；⚠️ 未平仓(`None`) ⇒ `-` ✓（**不写 0** ✗）
-                const _num2 = (v) => (v === null || v === undefined || v === '')
-                    ? '-' : Number(v).toFixed(2);
-                const buyPrice = _num2(trade.buy_price);
-                const sellPrice = _num2(trade.sell_price);
-                const typeText = _tradeTypeLabel(trade.trade_type, trade.sell_type);
+                const holdDays = trade.hold_days || '-';
                 const returnRate = trade.return_rate;
                 const detailUrl = trade.detail_url || 'javascript:void(0)';
                 
@@ -1956,18 +1583,15 @@ function displayBacktestTradesOnConfigPage(trades) {
                         <td>${stockCodeLink}</td>
                         <td>${stockName}</td>
                         <td>${buyDate}</td>
-                        <td>${buyPrice}</td>
                         <td>${sellDate}</td>
-                        <td>${sellPrice}</td>
                         <td>${holdDays}</td>
                         <td class="${returnRateClass}">${returnRateText}</td>
-                        <td>${typeText}</td>
                     </tr>
                 `;
             }).join('');
         } catch (error) {
             console.error('显示交易记录失败:', error);
-            tradesBody.innerHTML = '<tr><td colspan="9" class="text-center">显示交易记录失败</td></tr>';
+            tradesBody.innerHTML = '<tr><td colspan="6" class="text-center">显示交易记录失败</td></tr>';
         }
     }
 }

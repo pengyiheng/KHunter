@@ -112,21 +112,21 @@ async function startDataUpdate() {
     try {
         console.log('用户点击了开始数据更新按钮');
         
-        // 确认更新（手动点击 = 重新更新：后端忽略"今天已更新过"的幂等跳过）
-        if (!confirm('确定要开始数据更新吗？（将忽略"今天已更新"状态，重新拉取最近数据）')) {
+        // 确认更新
+        if (!confirm('确定要开始数据更新吗？')) {
             console.log('用户取消了数据更新');
             return;
         }
         
         console.log('发送请求到后端...');
         
-        // 调用后端API启动更新（force=true：手动重新更新，不考虑当天是否更新过）
+        // 调用后端API启动更新
         const response = await fetch('/api/data/update/start', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ force: true })
+            body: JSON.stringify({})
         });
         
         const result = await response.json();
@@ -219,44 +219,11 @@ async function getUpdateProgress() {
  */
 function updateProgressUI(data) {
     try {
-        // ★【2026-09-29 用户要求 ✓】显示"**当前环节**" + 已耗时 ✗→✓
-        //   动机 ✗✓：进度区此前**只有一句"正在更新数据，请稍候..."** ✗ ⇒
-        //   一旦某步变慢（实测：第8步空耗 20 分钟 ✗），用户**完全看不出卡在哪一步** ✗，
-        //   只能去翻日志或猜 ✗。现直接显示后端透出的 `currentStage` ✓。
-        const stageEl = document.getElementById('update-current-stage');
-        if (stageEl) {
-            const stage = String(data.currentStage || '').trim();
-            if (stage) {
-                // ★【2026-09-29 用户反馈 ✓】不再显示"第 N 个环节"✗ ——
-                //   环节名本身已含 `第X步`（含 5.5 / 8.5 ✓）⇒ 直接显示**最准** ✓，
-                //   也不会再出现"编号混乱"✗✓。
-                stageEl.textContent = `当前环节：${stage}`;
-                stageEl.style.display = 'block';
-            } else {
-                stageEl.style.display = 'none';   // 无环节信息 ⇒ 不显示假信息 ✓
-            }
-        }
-
-        // 已耗时（后端 `elapsedTime` 单位：秒 ✓）
-        const elapsedEl = document.getElementById('update-elapsed');
-        if (elapsedEl) {
-            const sec = Number(data.elapsedTime);
-            if (Number.isFinite(sec) && sec > 0) {
-                const m = Math.floor(sec / 60);
-                const s = sec % 60;
-                elapsedEl.textContent = m > 0 ? `已耗时 ${m} 分 ${s} 秒` : `已耗时 ${s} 秒`;
-                elapsedEl.style.display = 'block';
-            } else {
-                elapsedEl.style.display = 'none';
-            }
-        }
-
-        // 控制台仍保留详细信息 ✓（调试用 ✓）
+        // 简洁版本：只显示"正在更新中"，不显示进度条
+        // 但在控制台输出详细信息用于调试
         console.log('更新进度:', {
             status: data.status,
-            currentStage: data.currentStage,
-            stageNo: data.stageNo,
-            elapsedTime: data.elapsedTime,
+            progress: data.progress,
             message: data.message,
             totalStats: data.totalStats
         });
@@ -318,18 +285,7 @@ function showUpdateCompleted(data) {
         if (completedState) completedState.style.display = 'block';
         
         // 根据状态显示不同的完成信息
-        if (data.skipped === true) {
-            // 数据源尚未就绪，跳过本次更新
-            document.getElementById('update-result-icon').textContent = '⏸️';
-            document.getElementById('update-result-text').textContent = data.message || '数据源尚未就绪，已跳过本次更新';
-            document.getElementById('update-result-text').style.color = '#d97706';
-            
-            // 隐藏统计卡片（无数据）
-            const statsCards = document.querySelector('#update-completed-state div[style*=\"grid-template-columns\"]');
-            if (statsCards) statsCards.style.display = 'none';
-            
-            console.log('更新被跳过:', data.message);
-        } else if (data.status === 'completed') {
+        if (data.status === 'completed') {
             // 成功完成
             const stats = data.totalStats || {};
             

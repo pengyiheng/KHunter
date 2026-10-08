@@ -140,13 +140,8 @@ class ImmortalGuidanceStrategy(BaseStrategy):
         :param selection_date: 选股日期（YYYY-MM-DD格式）
         :return: 选股结果列表
         """
-<<<<<<< HEAD
         if not self._validate_data(df):
             return []
-=======
-        # _validate_data 已在 base_strategy.execute_selection 中完成，此处不重复检查
-        # 避免回测等场景因 selection_date 未传递导致退化为 datetime.now()
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         if not self._validate_stock_name(stock_name):
             return []

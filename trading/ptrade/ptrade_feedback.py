@@ -21,18 +21,6 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-<<<<<<< HEAD
-=======
-
-class PTradeFeedbackError(Exception):
-    """PTrade 反馈处理异常
-
-    反馈文件不完整（Fund/Hold 任一缺失）或解析失败时抛出，
-    用于终止反馈处理流程，由调用方（sync_portfolio_from_ptrade）捕获并安全返回。
-    """
-
-
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 # 默认反馈文件目录（相对于项目根目录）
 DEFAULT_FEEDBACK_DIR = "data/running/ptrade_feedback"
 
@@ -50,49 +38,6 @@ EXCHANGE_SUFFIX_MAP = {
     "上海A股": ".SH",
 }
 
-<<<<<<< HEAD
-=======
-# ETF 代码前缀（KHunter 只处理股票，ETF 由其他系统管理）
-# 沪市 ETF: 51xxxx, 50xxxx, 52xxxx, 56xxxx, 588xxx / 深市 ETF: 15xxxx, 16xxxx
-ETF_CODE_PREFIXES = ('15', '16', '50', '51', '52', '56', '588')
-
-
-def _read_csv(file_path, encoding='gbk'):
-    """单次读取 CSV 文件，不做重试。
-
-    设计原则：读取反馈文件时若发生异常（如 PTrade 正在写入导致文件被占用/不完整），
-    直接抛出明确异常交由上层 alert 用户，不做重试或回退，避免展示错误数据。
-
-    Args:
-        file_path: CSV 文件路径
-        encoding: 文件编码（PTrade 导出默认为 gbk）
-
-    Returns:
-        (headers, rows): 表头列表与有效数据行列表（已过滤空行）
-
-    Raises:
-        PTradeFeedbackError: 读取或解析失败时抛出，含明确上下文
-    """
-    try:
-        with open(file_path, 'r', encoding=encoding) as f:
-            reader = csv.reader(f)
-            headers = next(reader, None)
-            # 过滤完全为空的行，避免后续解析空行导致误判
-            rows = [r for r in reader if r and any(c.strip() for c in r)]
-    except (PermissionError, OSError, IOError, UnicodeDecodeError, csv.Error) as e:
-        # 读取失败（如文件被 PTrade 占用/正在写入）直接抛明确异常，由上层 alert 用户
-        raise PTradeFeedbackError(
-            f"读取反馈文件失败: {file_path} - {type(e).__name__}: {e}") from e
-    except Exception as e:
-        # 其他非预期错误也统一抛明确异常，不静默吞掉
-        raise PTradeFeedbackError(
-            f"读取反馈文件失败: {file_path} - {e}") from e
-    # 表头缺失同样视为异常，直接抛出
-    if not headers:
-        raise PTradeFeedbackError(f"反馈文件表头为空: {file_path}")
-    return headers, rows
-
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
 class PTradeFeedbackHandler:
     """PTrade 反馈处理器
@@ -126,30 +71,14 @@ class PTradeFeedbackHandler:
         # 解析 ptrade 子配置
         ptrade_cfg = config.get('ptrade', {}) if config else {}
         # PTrade 反馈文件所在目录（来自配置或默认值）
-<<<<<<< HEAD
         feedback_dir_rel = ptrade_cfg.get('feedback_dir', DEFAULT_FEEDBACK_DIR)
         self.feedback_dir = os.path.join(project_root, feedback_dir_rel)
-=======
-        # 支持绝对路径（如 D:/ptrade/input）和相对路径（如 data/running/ptrade_feedback）
-        feedback_dir_cfg = ptrade_cfg.get('feedback_dir', DEFAULT_FEEDBACK_DIR)
-        if os.path.isabs(feedback_dir_cfg):
-            self.feedback_dir = feedback_dir_cfg
-        else:
-            self.feedback_dir = os.path.join(project_root, feedback_dir_cfg)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # PTrade 是否启用
         self.enabled = ptrade_cfg.get('enabled', True) if ptrade_cfg else True
         # 返回文件读取模式
         self.feedback_mode = ptrade_cfg.get('feedback_mode', 'file') if ptrade_cfg else 'file'
         # KHunter 运行数据目录
         self.running_dir = os.path.join(project_root, DEFAULT_RUNNING_DIR)
-<<<<<<< HEAD
-=======
-        # ETF 持仓市值累积（read_holdings 跳过 ETF 时暂存，供 build_portfolio 使用）
-        self._etf_market_value = 0.0
-        # 其它非股票持仓市值累积（标准券/质押券等，2026-09-18：与 ETF 同样不纳入股票持仓）
-        self._other_market_value = 0.0
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 初始资金（来自 trading.initial_capital 或默认值）
         trading_cfg = config.get('trading', {}) if config else {}
         self.initial_capital = float(trading_cfg.get(
@@ -247,17 +176,10 @@ class PTradeFeedbackHandler:
 
         Returns:
             {available_cash, total_asset, market_value}
-<<<<<<< HEAD
-=======
-
-        Raises:
-            PTradeFeedbackError: 文件缺失或数值解析异常时抛出
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """
         fund_file = os.path.join(
             self.feedback_dir, f"Fund_{date_str}.csv")
         if not os.path.isfile(fund_file):
-<<<<<<< HEAD
             raise FileNotFoundError(f"Fund 文件不存在: {fund_file}")
 
         with open(fund_file, 'r', encoding='gbk') as f:
@@ -290,43 +212,6 @@ class PTradeFeedbackHandler:
                     f"总资产={result['total_asset']}, "
                     f"证券市值={result['market_value']}")
                 return result
-=======
-            # 文件缺失直接抛明确异常，交由 sync 层安全返回
-            raise PTradeFeedbackError(f"Fund 文件不存在: {fund_file}")
-        # 读取 CSV（单次读取，异常直接抛明确异常交由上层 alert 用户）
-        headers, rows = _read_csv(fund_file)
-        if not headers:
-            raise PTradeFeedbackError(f"Fund 文件表头为空: {fund_file}")
-        # 构建列名 → 列索引映射
-        col_map = {h.strip(): i for i, h in enumerate(headers)}
-        # 安全提取 float 值（非数值内容抛明确异常，便于定位坏数据）
-        def _safe_float(row, idx, name):
-            if idx < len(row) and row[idx].strip():
-                try:
-                    return float(row[idx].strip())
-                except (ValueError, TypeError):
-                    raise PTradeFeedbackError(
-                        f"Fund 文件数值解析失败: {name}={row[idx]!r} (文件 {fund_file})")
-            return 0.0
-        # 遍历数据行，取首个有效行
-        for row in rows:
-            if not row or all(c.strip() == '' for c in row):
-                continue
-            available_cash = _safe_float(row, col_map.get("可用资金", 3), "可用资金")
-            total_asset = _safe_float(row, col_map.get("总资产", 5), "总资产")
-            market_value = _safe_float(row, col_map.get("证券市值", 9), "证券市值")
-            result = {
-                "available_cash": round(available_cash, 2),
-                "total_asset": round(total_asset, 2),
-                "market_value": round(market_value, 2),
-            }
-            logger.info(
-                f"PTrade 反馈: 解析资金数据 {date_str} - "
-                f"可用资金={result['available_cash']}, "
-                f"总资产={result['total_asset']}, "
-                f"证券市值={result['market_value']}")
-            return result
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 无数据行
         return {"available_cash": 0.0, "total_asset": 0.0, "market_value": 0.0}
 
@@ -350,17 +235,10 @@ class PTradeFeedbackHandler:
 
         Returns:
             持仓列表 [{stock_code, stock_name, quantity, ...}]
-<<<<<<< HEAD
-=======
-
-        Raises:
-            PTradeFeedbackError: 文件缺失或数值解析异常时抛出
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """
         hold_file = os.path.join(
             self.feedback_dir, f"Hold_{date_str}.csv")
         if not os.path.isfile(hold_file):
-<<<<<<< HEAD
             raise FileNotFoundError(f"Hold 文件不存在: {hold_file}")
 
         holdings = []
@@ -417,105 +295,6 @@ class PTradeFeedbackHandler:
                 logger.info(
                     f"PTrade 反馈: 持仓 {stock_code} {stock_name} "
                     f"数量={quantity} 成本价={cost_price} 市值={market_value}")
-=======
-            # 文件缺失直接抛明确异常，交由 sync 层安全返回
-            raise PTradeFeedbackError(f"Hold 文件不存在: {hold_file}")
-        # 读取 CSV（单次读取，异常直接抛明确异常交由上层 alert 用户）
-        headers, rows = _read_csv(hold_file)
-        if not headers:
-            raise PTradeFeedbackError(f"Hold 文件表头为空: {hold_file}")
-        # 构建列名 → 列索引映射
-        col_map = {h.strip(): i for i, h in enumerate(headers)}
-        holdings = []
-        self._etf_market_value = 0.0  # 重置 ETF 市值累积值
-        self._other_market_value = 0.0  # 重置其它非股票持仓（标准券等）市值累积值
-
-        def _safe_str(row, idx):
-            if idx < len(row):
-                return row[idx].strip()
-            return ""
-
-        def _safe_int(row, idx, name):
-            val = row[idx].strip() if idx < len(row) else "0"
-            if not val:
-                return 0
-            try:
-                return int(float(val))
-            except (ValueError, TypeError):
-                # 非数值内容（如被截断的半行）抛明确异常，便于定位坏数据
-                raise PTradeFeedbackError(
-                    f"Hold 文件数值解析失败: {name}={val!r} (文件 {hold_file})")
-
-        def _safe_float(row, idx, name):
-            val = row[idx].strip() if idx < len(row) else "0"
-            if not val:
-                return 0.0
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                raise PTradeFeedbackError(
-                    f"Hold 文件数值解析失败: {name}={val!r} (文件 {hold_file})")
-
-        for row in rows:
-            if not row or all(c.strip() == '' for c in row):
-                continue
-            # 提取关键字段
-            trade_category = _safe_str(row, col_map.get("交易类别", 3))
-            stock_code_raw = _safe_str(row, col_map.get("证券代码", 4))
-            # ETF 过滤：KHunter 只处理股票，ETF 由其他系统管理
-            # 跳过 ETF 持仓但累积其市值，确保总资产不因过滤而减少
-            if stock_code_raw and stock_code_raw.startswith(ETF_CODE_PREFIXES):
-                etf_mv = _safe_float(row, col_map.get("证券市值", 14), "证券市值")
-                self._etf_market_value += etf_mv
-                logger.info(f"PTrade 反馈: 跳过 ETF {stock_code_raw} "
-                            f"市值={etf_mv}，不纳入 KHunter 持仓，计入 ETF 资产")
-                continue
-            stock_name = _safe_str(row, col_map.get("证券名称", 5))
-            quantity = _safe_int(row, col_map.get("持有数量", 6), "持有数量")
-            available_volume = _safe_int(row, col_map.get("可用数量", 7), "可用数量")
-            profit_loss = _safe_float(row, col_map.get("盈亏金额", 8), "盈亏金额")
-            cost_price = _safe_float(row, col_map.get("成本价", 13), "成本价")
-            market_value = _safe_float(row, col_map.get("证券市值", 14), "证券市值")
-
-            # 【2026-09-18】持仓数量为 0（已清仓、仅留痕迹行）→ 不计入持仓列表
-            #   否则前端会显示"持仓 0 / 现价 0 / -100%"的无效行
-            if quantity <= 0:
-                logger.info(f"PTrade 反馈: 跳过持仓为 0 的 {stock_code_raw} {stock_name}"
-                            f"（不纳入 KHunter 持仓）")
-                continue
-
-            # 【2026-09-18】标准券（质押券）不是股票 → 与 ETF 同样处理：
-            #   不纳入 KHunter 持仓列表；其市值单独累积，避免被误当成可用股票资产
-            #   识别口径：证券名称含"标准券"，或证券类别为 z/Z（PTrade 质押券标记）
-            _sec_category = _safe_str(row, col_map.get("证券类别", 17))
-            if '标准券' in stock_name or _sec_category in ('z', 'Z'):
-                self._other_market_value += market_value or 0.0
-                logger.info(f"PTrade 反馈: 跳过标准券 {stock_code_raw} {stock_name} "
-                            f"市值={market_value}，不纳入 KHunter 持仓（同 ETF 口径）")
-                continue
-            # 推导 suffix 并构造完整代码
-            suffix = self._get_stock_suffix(trade_category, stock_code_raw)
-            stock_code = f"{stock_code_raw}{suffix}"
-            # 反算当前价
-            if quantity > 0:
-                current_price = round(market_value / quantity, 2)
-            else:
-                current_price = 0.0
-            holding = {
-                "stock_code": stock_code,
-                "stock_name": stock_name,
-                "quantity": quantity,
-                "available_volume": available_volume,
-                "buy_price": round(cost_price, 4),
-                "market_value": round(market_value, 2),
-                "current_price": current_price,
-                "profit_loss": round(profit_loss, 2),
-            }
-            holdings.append(holding)
-            logger.info(
-                f"PTrade 反馈: 持仓 {stock_code} {stock_name} "
-                f"数量={quantity} 成本价={cost_price} 市值={market_value}")
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return holdings
 
     # ========== 代码转换 ==========
@@ -561,23 +340,11 @@ class PTradeFeedbackHandler:
         fund = self.read_fund(feedback_date)
         ptrade_holdings = self.read_holdings(feedback_date)
         # 构建 positions（只包含 PTrade 导出的真实字段）
-<<<<<<< HEAD
         new_positions = {}
         for h in ptrade_holdings:
             code = h["stock_code"]
             buy_price = h["buy_price"]
             quantity = h["quantity"]
-=======
-        # 过滤 quantity <= 0 的空仓位，避免生成无意义的卖出信号
-        new_positions = {}
-        for h in ptrade_holdings:
-            quantity = h["quantity"]
-            if quantity <= 0:
-                logger.info(f"PTrade 反馈: 跳过空仓位 {h['stock_code']} {h['stock_name']} (quantity={quantity})")
-                continue
-            code = h["stock_code"]
-            buy_price = h["buy_price"]
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             buy_amount = round(buy_price * quantity, 2)
             # 计算盈亏比例
             profit_loss = h["profit_loss"]
@@ -600,7 +367,6 @@ class PTradeFeedbackHandler:
             }
             new_positions[code] = position
         # 构建 portfolio
-<<<<<<< HEAD
         cash = fund["available_cash"]
         portfolio = {
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -613,49 +379,6 @@ class PTradeFeedbackHandler:
         logger.info(
             f"PTrade 反馈: 构建 portfolio 完成 - "
             f"现金={cash}, 总资产={fund['total_asset']}, 持仓数={len(new_positions)}")
-=======
-        # total_asset 来自 Fund 文件，包含 ETF 市值，不因过滤 ETF 持仓而扣减
-        total_asset = fund["total_asset"]
-        # 从股票持仓自算 market_value（不含 ETF），与 positions 保持一致
-        stock_market_value = round(sum(p["market_value"] for p in new_positions.values()), 2)
-        etf_mv = round(self._etf_market_value, 2)
-        # 可用现金按「总资产 - 股票持仓市值 - ETF 市值」反算
-        # 原因：清算前可能存在未成交委托，Fund 文件的「可用资金」列已扣除冻结
-        # 资金，会低于真实可用余额，导致策略可买入金额计算出现偏差。
-        # 数据异常（总资产小于持仓市值导致反算为负）时回退到 Fund 可用资金列并告警。
-        cash = round(total_asset - stock_market_value - etf_mv, 2)
-        if cash < 0:
-            logger.warning(
-                f"PTrade 反馈: 反算可用资金为负({cash})，总资产={total_asset}，"
-                f"股票市值={stock_market_value}，ETF市值={etf_mv}，"
-                f"回退使用 Fund 可用资金列")
-            cash = round(fund.get("available_cash", 0), 2)
-        # Fund「可用资金」列仅作诊断对照：清算前该列已扣除未成交委托冻结资金，会低于真实
-        # 可用余额（2026-09-15 实盘：该列 27425.82，真实可用 141472.44），直接用于展示/
-        # 下单会与策略口径（cash）不一致。
-        fund_available_cash = round(fund.get("available_cash", 0), 2)
-        if abs(fund_available_cash - cash) >= 0.01:
-            logger.info(
-                f"PTrade 反馈: Fund「可用资金」列={fund_available_cash} 与反算可用资金="
-                f"{cash}（总资产-股票市值-ETF市值）不一致，以反算值为准")
-        portfolio = {
-            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "cash": cash,                                 # 反算值：策略下单口径（含未成交委托冻结资金）
-            "available_cash": cash,                       # 展示口径与策略口径统一（2026-09-15 修正）
-            "fund_available_cash": fund_available_cash,   # Fund 列原始值：仅供诊断对照
-            "total_asset": total_asset,                   # Fund 文件原始总资产，含 ETF
-            "market_value": stock_market_value,           # 仅股票市值（与 positions 一致）
-            "etf_market_value": etf_mv,                   # ETF 市值（独立追踪，不计入 market_value）
-            "initial_capital": self.initial_capital,
-            "positions": new_positions,
-        }
-        log_msg = (f"PTrade 反馈: 构建 portfolio 完成 - "
-                   f"可用资金={cash}, 总资产={total_asset}, "
-                   f"股票市值={stock_market_value}, 持仓数={len(new_positions)}")
-        if etf_mv > 0:
-            log_msg += f", ETF市值={etf_mv}"
-        logger.info(log_msg)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return portfolio
 
     # ========== 主流程 ==========
@@ -674,7 +397,6 @@ class PTradeFeedbackHandler:
         Returns:
             处理结果 {success, portfolio_file, fund_data, holdings}
         """
-<<<<<<< HEAD
         # 步骤1: 检查文件
         if not self.check_feedback_exists(feedback_date):
             return {
@@ -687,47 +409,19 @@ class PTradeFeedbackHandler:
         # 步骤3: 构建新 portfolio（自动模式不继承旧数据）
         portfolio = self.build_portfolio(feedback_date)
         # 步骤4: 保存
-=======
-        # 步骤1: 检查文件完整性（Fund 与 Hold 必须同时存在）
-        # 文件不完整属于不可恢复的异常，直接抛出 PTradeFeedbackError 终止处理，
-        # 而非返回失败字典；调用方（sync_portfolio_from_ptrade）已用 try/except 包裹，
-        # 捕获异常后安全返回 False，不会写入不完整的 portfolio
-        fund_file = os.path.join(self.feedback_dir, f"Fund_{feedback_date}.csv")
-        hold_file = os.path.join(self.feedback_dir, f"Hold_{feedback_date}.csv")
-        missing_files = []
-        if not os.path.isfile(fund_file):
-            missing_files.append(f"Fund_{feedback_date}.csv")
-        if not os.path.isfile(hold_file):
-            missing_files.append(f"Hold_{feedback_date}.csv")
-        if missing_files:
-            raise PTradeFeedbackError(
-                f"反馈文件不完整: 缺少 {', '.join(missing_files)}")
-        # 步骤2: 构建新 portfolio（自动模式不继承旧数据，内部读取 fund+holdings）
-        portfolio = self.build_portfolio(feedback_date)
-        # 步骤3: 保存（按交易日日期命名）
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         pf_date_dash = self._ymd_to_dash(feedback_date)
         portfolio_file = os.path.join(
             self.running_dir, f"portfolio_{pf_date_dash}.json")
         with open(portfolio_file, 'w', encoding='utf-8') as f:
             json.dump(portfolio, f, ensure_ascii=False, indent=2)
         logger.info(f"PTrade 反馈: portfolio 已保存 → {portfolio_file}")
-<<<<<<< HEAD
-=======
-        # 构建 holdings 列表（从 portfolio positions 提取，供调用方使用）
-        holdings_list = list(portfolio.get('positions', {}).values())
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return {
             "success": True,
             "feedback_date": feedback_date,
             "portfolio_date": pf_date_dash,
             "portfolio_file": portfolio_file,
-<<<<<<< HEAD
             "fund_data": fund,
             "holdings": holdings,
-=======
-            "holdings": holdings_list,
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             "portfolio": portfolio,
         }
 
@@ -748,34 +442,6 @@ class PTradeFeedbackHandler:
 
 # ========== 便捷函数 ==========
 
-<<<<<<< HEAD
-=======
-def feedback_files_stamp(feedback_dir: str, feedback_date: str):
-    """反馈文件（Fund/Hold）的 mtime 指纹，用于判断内存快照是否仍然新鲜
-
-    前端展示层复用初始化同步的内存结果时，需要知道反馈文件是否被 PTrade 重新导出过：
-    文件未变 → 内存快照与文件一致，可跳过重复解析；已变 → 回退直读文件，保证展示新鲜。
-
-    Args:
-        feedback_dir: 反馈文件目录
-        feedback_date: 反馈日期 YYYYMMDD
-
-    Returns:
-        (fund_mtime, hold_mtime) 元组；任一文件不可读时返回 None
-    """
-    if not feedback_dir:
-        return None
-    stamp = []
-    for name in ("Fund", "Hold"):
-        path = os.path.join(feedback_dir, f"{name}_{feedback_date}.csv")
-        try:
-            stamp.append(os.path.getmtime(path))
-        except OSError:
-            return None
-    return tuple(stamp)
-
-
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 def process_ptrade_feedback(
         feedback_date: str,
         project_root: str = None,

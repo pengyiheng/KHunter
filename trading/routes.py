@@ -12,8 +12,6 @@ from utils.strategy_config_manager import StrategyConfigManager
 import logging
 
 # 获取日志记录器
-import threading  # 【2026-09-20】自适应回测异步化需要（此前未导入 ✗）
-
 logger = logging.getLogger(__name__)
 
 # 创建蓝图
@@ -26,97 +24,6 @@ backtest_dao = BacktestDAO()
 from utils.global_db import get_global_db
 db_manager = get_global_db()
 akshare_fetcher = AKShareFetcher("data")
-
-
-def _load_turtle_params(timing_strategy: str) -> dict:
-    """加载海龟类策略参数（海龟 / 低位海龟 / 海龟plus；各入口统一口径 ✓）
-
-    【2026-09-23 合并】改为委托**唯一读取入口**：
-        trading.timing_strategies.load_turtle_family_params
-      · yaml 只保留**一个**海龟类配置块（`TurtleStrategy.params` ✓），海龟与海龟plus 共用 ✓；
-      · 低位海龟保持自身口径（1/6/12、无 MA20 过滤 ✓）；
-      · 读取失败退回代码默认 **10/5/10** ✓。
-
-    历史问题（已消除 ✗→✓）：
-      · 本函数曾自行维护 turtle / low_turtle / turtle_plus 三个分支及各自的兜底值 ✗
-        （turtle 兜底 20/10/20、turtle_plus 兜底 12/6/12 ✗），
-        而 web_server / 定时流水线 / 批量回测又各自写了一份读取逻辑 ✗ →
-        四处漂移，最终出现"同一策略同一区间、不同入口收益差一倍"的严重不一致 ✗。
-
-    Args:
-        timing_strategy: 择时策略名（'turtle' / 'low_turtle' / 'turtle_plus' / 其它）
-
-    Returns:
-        dict: 海龟类参数键值（非海龟类策略返回空字典）
-    """
-    from trading.timing_strategies import load_turtle_family_params
-    return load_turtle_family_params(timing_strategy)
-
-
-def _attach_position_status(trades: list) -> list:
-    """给“订单级”交易记录补上【所属持仓的结局】（2026-09-13）
-
-    背景：`backtest_trade` 按**订单**存储 —— 首仓(buy) / 加仓(add) / 卖出(sell)
-    各占一行，买入与加仓行天然没有 `sell_date`。前端若把“无 sell_date”当作
-    “持仓中”，就会把 226 笔首仓 + 168 笔加仓订单全部误标为“持仓中”
-    （曾显示“620 笔：已平仓 226 / 持仓中 394”，但真正未平仓的只有期末的极少数）。
-
-    这里按【事件发生日】排序（买/加仓看 buy_date，卖出看 sell_date）后用 FIFO 把
-    sell 行按数量分摊到各笔买入订单上，为每笔订单原地补充：
-
-        order_kind            'buy' / 'add' / 'sell'
-        position_status       '已平仓' / '持仓中'（仅真正未平仓）
-        matched_sell_date / matched_sell_price / matched_sell_type
-        matched_return_rate / matched_profit_loss
-
-    说明：`matched_*` 一律取自配对到的那笔卖出行的**原始口径**（引擎按持仓均价核算），
-    不额外做订单级分摊，避免与引擎口径冲突；要看“单笔加仓自身盈亏”请用 FIFO 分摊，
-    见分析脚本口径（成本按股数分摊）。
-
-    Args:
-        trades: `BacktestDAO.get_trades_by_result()` 的返回（会被原地修改）
-
-    Returns:
-        list: 同一个列表
-    """
-    from collections import defaultdict
-
-    def _ev(t):
-        d = t.get('sell_date') if t.get('trade_type') == 'sell' else t.get('buy_date')
-        return (str(d or t.get('buy_date') or ''), int(t.get('id') or 0))
-
-    open_lots = defaultdict(list)          # stock_code -> [未结算的买入订单, ...]
-    for t in sorted(trades or [], key=_ev):
-        tt = t.get('trade_type')
-        code = t.get('stock_code')
-        if tt in ('buy', 'add'):
-            t['order_kind'] = tt
-            t['position_status'] = '持仓中'     # 待下面被卖出结算时改写
-            open_lots[code].append({
-                'row': t, 'remain': int(t.get('quantity') or 0)})
-            continue
-        if tt != 'sell':
-            continue
-        t['order_kind'] = 'sell'
-        t['position_status'] = '已平仓'
-        remain = int(t.get('quantity') or 0)
-        queue = open_lots.get(code) or []
-        while remain > 0 and queue:
-            lot = queue[0]
-            take = min(remain, lot['remain'])
-            row = lot['row']
-            row['position_status'] = '已平仓'
-            row['matched_sell_date'] = t.get('sell_date')
-            row['matched_sell_price'] = t.get('sell_price')
-            row['matched_sell_type'] = t.get('sell_type')
-            row['matched_return_rate'] = t.get('return_rate')
-            row['matched_profit_loss'] = t.get('profit_loss')
-            row['matched_quantity'] = take
-            lot['remain'] -= take
-            remain -= take
-            if lot['remain'] <= 0:
-                queue.pop(0)
-    return trades
 
 
 @trading_bp.route('/backtest/configs', methods=['GET'])
@@ -155,32 +62,8 @@ def get_backtest_configs():
     """
     try:
         # 调用DAO获取所有配置
-        configs = backtest_dao.get_all_configs() or []
-
-        # 【2026-09-27】**yaml 为源** ✓（`utils/backtest_config_store` ✓ 单一存储层 ✓）：
-        #   用 yaml `backtest:` 节的值**覆盖** DB 值 ✓ ⇒ 前端显示的就是 yaml 里的真值 ✓✓
-        #   （DB 仅作**兼容镜像** ✗，不再是最新来源 ✓）
-        #
-        # ★★【2026-10-05 修复 ✓】**yaml 值必须"无条件"返回** ✗→✓ ★★
-        #   事故 ✗✓（用户反馈：**"回测参数保存不成功"** ✓，界面「回测模式」永远显示
-        #     `legacy` ✗）：原实现是 `if configs and _y:` ⇒ **DB 里没有记录时压根不合并 yaml** ✗；
-        #     而前端 `loadBacktestParams()` 又要求 `data.data.configs.length > 0` ✗
-        #     ⇒ **整个回填被跳过** ✗ ⇒ 所有控件停在 HTML 默认值 ✗✓ ——
-        #     `params-backtest-mode` 的默认 `<option selected>` 恰好就是 `legacy` ✓✓
-        #     ⇒ 与用户截图**完全吻合** ✓。
-        #   ⇒ 改为 ✓：**yaml 是源** ⇒ 不管 DB 有没有行 ✓，都返回**至少一个**
-        #     "yaml 视图"对象 ✓ ⇒ 前端**一定能回填** ✓（`total_count` 至少为 1 ✓）。
-        try:
-            from utils.backtest_config_store import load as _load_bt_cfg
-            _y = _load_bt_cfg() or {}
-            if configs:
-                for _c in configs:
-                    _c.update(_y)
-            elif _y:
-                configs = [dict(_y)]
-        except Exception as _e:
-            logger.debug(f'yaml 回测配置覆盖失败（继续用 DB 值 ✓）: {_e}')
-
+        configs = backtest_dao.get_all_configs()
+        
         return jsonify({
             'success': True,
             'message': '获取回测配置列表成功',
@@ -384,28 +267,6 @@ def get_batch_backtest_status():
         # 获取状态
         status = batch_queue.get_status()
 
-<<<<<<< HEAD
-=======
-        # 【2026-09-20】补齐"实时交易日进度" ✓（本次问题根因）
-        #   批量队列只在**任务启停时**把 BACKTEST_PROGRESS 落盘 ✗
-        #   （backtest_batch_queue.py:258/288/294/303 ✓），而本接口读的是那份**文件** ✗
-        #   → 文件里的 done_days/total_days 会长期停在 0 ✗（实测 ✓）
-        #   → 前端因此显示不出 "(n/N 交易日)"、也估算不出剩余时间 ✗
-        #   现：用**实时**注册表覆盖 current_task 的进度字段 ✓（引擎逐日写入 ✓）
-        try:
-            from trading.backtest_engine import get_backtest_progress
-            _bp = get_backtest_progress() or {}
-            _ct = (status or {}).get('current_task')
-            if _ct and _bp.get('running'):
-                _ct['done_days'] = _bp.get('done_days', 0)
-                _ct['total_days'] = _bp.get('total_days', 0)
-                _ct['current_date'] = _bp.get('current_date') or _ct.get('current_date', '')
-                _ct['engine_started_at'] = _bp.get('started_at', '')
-                _ct['engine_percent'] = _bp.get('percent', 0.0)
-        except Exception as _e:
-            logger.warning(f'读取实时回测进度失败（忽略，不影响状态返回）: {_e}')
-
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         return jsonify({
             'success': True,
             'data': status
@@ -689,41 +550,6 @@ def create_backtest_config():
                 'data': None
             }), 400
         
-        # 【2026-09-27】先写 **yaml** ✓（**单一存储层** ✓：yaml 为源 ✓ + DB 镜像 ✗ 兼容 ✓）
-        #
-        # ★★【2026-10-05 修复 ✓】**写 yaml 失败 ⇒ 必须"响亮失败"** ✗→✓ ★★
-        #   事故 ✗✓（用户反馈：**"回测参数保存不成功"** ✓）：`store.save()` 在
-        #     "新文本 `yaml.safe_load` 解析不过"时会**拒绝落盘** ✓（原文件一字不动 ✓），
-        #     并在返回值里给 `yaml_ok=False` + `error` ✓ ——
-        #     但**本路由此前完全忽略返回值** ✗ ⇒ 继续写 DB ✗、还回 `success: true` ✗
-        #     ⇒ 用户看到"保存成功" ✗、**配置文件其实没变** ✗ ⇒ 表现就是"保存不成功" ✓✓
-        #     （与 10-03 / 10-05 两次"参数不生效"✗ 同源 ✓）。
-        #   ⇒ 与 store 的既有取向一致（**宁可失败，也不产出看起来正常的结果** ✗✓）：
-        #     yaml 没写成功 ⇒ **不写 DB** ✗（否则 yaml 旧值 + DB 新值 ⇒ **静默不一致** ✗✓，
-        #     正是 store 里特意早退要避免的那件事 ✓）+ 如实把原因回给前端 ✓。
-        #   ⚠️ 判定用 `changed ∧ ¬yaml_ok`（或带 `error` ✓）⇒ 只针对"**本想写却没写成**"✗，
-        #     不会误伤"**本次没有任何可写的键**"（那种情况 `vals` 为空 ✓、`changed` 也为空 ✓）。
-        _store_info = {}
-        try:
-            from utils.backtest_config_store import save as _save_bt_cfg
-            _store_info = _save_bt_cfg(data)
-            logger.info(f'回测配置已写入 yaml ✓ changed={_store_info.get("changed")} '
-                        f'（DB 镜像={_store_info.get("db_ok")} ✓）')
-        except Exception as _e:
-            logger.warning(f'写入 yaml 失败 ✗（DB 仍会写 ✓）: {_e}')
-
-        if _store_info.get('error') or (_store_info.get('changed')
-                                        and not _store_info.get('yaml_ok')):
-            _err = _store_info.get('error') or '（未返回原因 ✗ —— 详见后端日志 ✓）'
-            logger.error(f'【回测参数】**yaml 未写入** ✗ ⇒ 拒绝本次保存（不写 DB ✓，'
-                         f'保持 yaml/DB 一致 ✓）：{_err}')
-            return jsonify({
-                'success': False,
-                'message': (f'回测参数**未保存** ✗：配置文件写入被拒绝 ✓（原文件未改 ✓）。'
-                            f'原因：{_err}'),
-                'data': None
-            }), 500
-
         # 调用DAO保存配置
         config_id = backtest_dao.save_config(data)
         
@@ -755,9 +581,6 @@ def create_backtest_config():
 def update_backtest_config(config_id):
     """
     更新回测配置接口
-
-    ⚠️ 【2026-09-27】与 `POST /backtest/configs` **口径一致** ✓：先写 yaml `backtest:` 节 ✓
-       （7 项基础参数 ✓，注释保留 ✓），再写 DB ✓ ⇒ **不会再出现"改了 DB 被 yaml 覆盖"** ✗✓
     
     参数:
         config_id: 配置ID (路径参数)
@@ -792,21 +615,7 @@ def update_backtest_config(config_id):
     try:
         # 获取请求数据
         data = request.get_json() or {}
-
-        # 【2026-09-27】**与 POST 对称** ✓：先写 **yaml** ✓（同一存储层 `utils/backtest_config_store` ✓）
-        #   动机 ✗✓（**同步盲区**）：本端点原先**只写 DB** ✗ ⇒ 而**所有读取侧都是 yaml 优先** ✗ ⇒
-        #            DB 的改动会被 yaml **静默覆盖** ✗ ⇒ 调用方误以为"改了没生效" ✗✓
-        #   行为 ✓：`save()` **只认 7 项基础参数** ✓（`config_name`/`buy_point_*`/日期等**自动忽略** ✗）
-        #            并把同样 7 项**镜像回 DB** ✓ ⇒ 与下方 `dao.update_config()` 写的是**同值** ✓（幂等 ✓）
-        _store_info = {}
-        try:
-            from utils.backtest_config_store import save as _save_bt_cfg
-            _store_info = _save_bt_cfg(data)
-            logger.info(f'回测配置(PUT)已写入 yaml ✓ changed={_store_info.get("changed")} '
-                        f'（DB 镜像={_store_info.get("db_ok")} ✓）')
-        except Exception as _e:
-            logger.warning(f'写入 yaml 失败 ✗（DB 仍会写 ✓）: {_e}')
-
+        
         # 调用DAO更新配置
         success = backtest_dao.update_config(config_id, data)
         
@@ -992,7 +801,6 @@ def run_backtest():
         enable_temp_limit = data.get('enable_temp_limit', 1)
         temp_limit_mode = data.get('temp_limit_mode', 'both')
         
-<<<<<<< HEAD
         # 从配置文件读取海龟策略参数
         turtle_params = {}
         if timing_strategy == 'turtle':
@@ -1008,10 +816,6 @@ def run_backtest():
                     'n_entry': 20, 'n_exit': 10, 'atr_period': 20,
                     'entry_atr': 0.02, 'add_atr': 0.5, 'exit_atr': 2.0, 'base_position_amount': 20000
                 }
-=======
-        # 从配置文件读取海龟/低位海龟策略参数（与 /backtest/regime/run 共用 _load_turtle_params）
-        turtle_params = _load_turtle_params(timing_strategy)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 验证参数
         if not strategy_name or not start_date or not end_date:
@@ -1041,7 +845,6 @@ def run_backtest():
             # 温度约束参数
             'enable_temp_limit': enable_temp_limit,
             'temp_limit_mode': temp_limit_mode,
-<<<<<<< HEAD
             # 海龟策略参数（从配置文件读取）
             'n_entry': turtle_params.get('n_entry'),
             'n_exit': turtle_params.get('n_exit'),
@@ -1050,25 +853,8 @@ def run_backtest():
             'add_atr': turtle_params.get('add_atr'),
             'exit_atr': turtle_params.get('exit_atr'),
             'base_position_amount': turtle_params.get('base_position_amount')
-=======
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         }
-
-        # 【2026-09-23】海龟类参数：统一由唯一入口读取，**只写配置里真实存在的键** ✓
-        #   原实现手写 7 个键 ✗，两个问题：
-        #     ① 海龟plus 的 lookback_days / max_additions / add_profit_min / preset
-        #        在单次回测里从未生效 ✗（只因恰好等于代码默认值才没暴露 ✗）；
-        #     ② 配置精简后 `turtle_params.get('entry_atr')` 会写字面 **None** ✗
-        #        （键存在、值为 None ✗ —— `.get(k, 默认值)` 的默认值只在**缺键**时生效 ✗），
-        #        虽被下游过滤 ✓，但日志/配置里出现 None 极易误读为"参数没读取成功" ✗。
-        if turtle_params:
-            from trading.timing_strategies import TURTLE_FAMILY_PARAM_KEYS
-            config.update({k: v for k, v in turtle_params.items()
-                           if v is not None and k in TURTLE_FAMILY_PARAM_KEYS})
-            # preset 的顶层键名为 turtle_preset（引擎/运行器按此读取 ✓）
-            if turtle_params.get('preset') is not None:
-                config['turtle_preset'] = turtle_params['preset']
-
+        
         # 使用原有的回测引擎
         logger.info("使用原有回测引擎")
         engine = BacktestEngine()
@@ -1077,15 +863,10 @@ def run_backtest():
         result = engine.run_backtest(english_strategy_name, config)
         
         # 构建保存到数据库的结果格式
-<<<<<<< HEAD
         # 计算final_capital
         final_capital = config.get('initial_capital', 300000)
         if 'capital_history' in result and result['capital_history']:
             final_capital = result['capital_history'][-1]
-=======
-        # 使用引擎返回的 final_capital（引擎内已确保 capital_history 与其一致）
-        final_capital = result.get('final_capital', config.get('initial_capital', 300000))
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         
         # 使用中文策略名称保存到数据库，每次都创建新记录
         save_result = {
@@ -1106,26 +887,8 @@ def run_backtest():
             'profit_loss_ratio': result.get('performance', {}).get('profit_loss_ratio', 0),
             'max_drawdown': result.get('performance', {}).get('max_drawdown', 0),
             'sharpe_ratio': result.get('performance', {}).get('sharpe_ratio', 0),
-<<<<<<< HEAD
             'initial_capital': config.get('initial_capital', 300000),
             'final_capital': final_capital
-=======
-            # 【2026-09-22 修复】补上 avg_hold_days：引擎早已算出该值 ✗，
-            #   但此处漏传 → 落库恒为默认 0 ✗（全库 521 行 avg_hold_days 全 0 的原因 ✓）
-            'avg_hold_days': result.get('performance', {}).get('avg_hold_days', 0),
-            'initial_capital': config.get('initial_capital', 300000),
-            'final_capital': final_capital,
-            # ★★【2026-10-03 用户要求 ✓】随结果一起落库：**主要参数设置情况** ✗→✓ ★★
-            #   动机 ✗✓：此前单次回测只存绩效 ✗ ⇒ 两次数字不同时无法定位"哪项参数变了" ✗✓
-            #     （本会话只能靠翻日志 + 手查 yaml 才归因出来 ✓）。
-            'param_snapshot': result.get('param_snapshot'),
-            # ⚠️ 顺手补两处**漏传** ✗→✓（引擎早已算出 ✓）：
-            #   `data_fingerprint` ⇒ `save_result` 由它派生 `data_version` ✓
-            #   `data_gate` ✓ ⇒ 少传时版本号恒为空 ✗ ⇒ 两次结果**无法判断是否同数据** ✗✓
-            #   （实测：本次会话对比的两行 `data_version` 都是空 ✓，正是这个原因 ✓）
-            'data_fingerprint': result.get('data_fingerprint'),
-            'data_gate': result.get('data_gate'),
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         }
         
         # 每次都创建新记录，不覆盖已有的回测结果
@@ -1426,9 +1189,6 @@ def get_backtest_result(result_id):
                 trade['buy_date'] = str(trade['buy_date'])
             if trade.get('sell_date'):
                 trade['sell_date'] = str(trade['sell_date'])
-
-        # 补充每笔订单“所属持仓的结局”（否则买入/加仓订单会被误判为“持仓中”）
-        _attach_position_status(trades)
         
         # 处理结果中的Infinity值，将其转换为null
         def handle_infinity(value):
@@ -1531,10 +1291,7 @@ def get_backtest_trades(result_id):
     try:
         # 调用DAO获取交易记录
         trades = backtest_dao.get_trades_by_result_id(result_id)
-
-        # 补充每笔订单“所属持仓的结局”（buy/add 行本身没有 sell_date）
-        _attach_position_status(trades)
-
+        
         return jsonify({
             'success': True,
             'message': '获取回测交易记录成功',
@@ -3016,472 +2773,3 @@ def export_execution_plan(plan_id):
             'message': f'导出执行方案失败: {str(e)}',
             'data': None
         }), 500
-<<<<<<< HEAD
-=======
-
-
-# ======================================================================
-# 自适应回测（ADX regime 路由）—— 独立功能，不影响现有策略回测
-# ======================================================================
-
-from pathlib import Path as _RegimePath
-
-_REGIME_CONFIG_PATH = _RegimePath(__file__).resolve().parent.parent / 'config' / 'regime_router.yaml'
-
-
-def _load_regime_config_raw() -> dict:
-    """读取 regime_router.yaml（缺失/异常时返回空字典）"""
-    try:
-        import yaml
-        if _REGIME_CONFIG_PATH.exists():
-            with open(_REGIME_CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-    except Exception as e:
-        logger.warning(f'读取 regime_router.yaml 失败: {e}')
-    return {}
-
-
-def _fill_buy_execution(rules: dict) -> dict:
-    """为每条规则补齐 buy_execution（缺失时按方向推导：多头 open / 空头 ma_limit）
-
-    兼容旧配置：yaml 中未写该字段时，页面也能正确显示，不会静默丢失。
-    """
-    from trading.regime_router import default_buy_execution
-
-    out = {}
-    for reg, rule in (rules or {}).items():
-        r = dict(rule or {})
-        if not r.get('buy_execution'):
-            r['buy_execution'] = default_buy_execution(reg)
-        out[reg] = r
-    return out
-
-
-@trading_bp.route('/backtest/regime/config', methods=['GET'])
-def get_regime_config():
-    """获取自适应回测路由配置（默认=上次保存；首次=内置默认）"""
-    try:
-        from trading.regime_router import DEFAULT_CONFIG, DEFAULT_RULES
-
-        raw = (_load_regime_config_raw().get('regime_router') or {})
-        resp = jsonify({
-            'success': True,
-            'data': {
-                'enabled': raw.get('enabled', DEFAULT_CONFIG['enabled']),
-                'confirm_days': raw.get('confirm_days', DEFAULT_CONFIG['confirm_days']),
-                'rules': _fill_buy_execution(raw.get('rules') or DEFAULT_RULES),
-                'is_default': not raw.get('rules'),
-            }
-        })
-        # 禁止缓存：否则保存配置后页面可能仍显示旧值
-        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-        return resp, 200
-    except Exception as e:
-        logger.error(f'获取自适应路由配置失败: {e}')
-        return jsonify({'success': False, 'message': str(e), 'data': None}), 500
-
-
-@trading_bp.route('/backtest/regime/config', methods=['POST'])
-def save_regime_config():
-    """保存路由配置到 config/regime_router.yaml（写前自动备份 .bak）"""
-    try:
-        import shutil
-
-        import yaml
-
-        data = request.get_json() or {}
-        rules = data.get('rules')
-        if not isinstance(rules, dict) or not rules:
-            return jsonify({'success': False, 'message': 'rules 不能为空', 'data': None}), 400
-
-        raw = _load_regime_config_raw()
-        section = raw.get('regime_router') or {}
-        section['rules'] = rules
-        if data.get('confirm_days') is not None:
-            section['confirm_days'] = int(data['confirm_days'])
-        # 保持默认关闭，避免影响其它入口（页面运行时会显式开启）
-        section.setdefault('enabled', False)
-        raw['regime_router'] = section
-
-        _REGIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if _REGIME_CONFIG_PATH.exists():
-            shutil.copy2(str(_REGIME_CONFIG_PATH), str(_REGIME_CONFIG_PATH) + '.bak')
-        with open(_REGIME_CONFIG_PATH, 'w', encoding='utf-8') as f:
-            yaml.dump(raw, f, allow_unicode=True, sort_keys=False)
-
-        logger.info(f'自适应路由配置已保存: {len(rules)} 条规则')
-        return jsonify({'success': True, 'message': '配置已保存', 'data': {'rules': rules}}), 200
-    except Exception as e:
-        logger.error(f'保存自适应路由配置失败: {e}')
-        return jsonify({'success': False, 'message': str(e), 'data': None}), 500
-
-
-# 【2026-09-20】自适应回测异步化状态：避免同步长请求被服务端超时掐断 ✗
-#   （原同步实现：长区间几十分钟~几小时 → 连接被切断 ✗ → 前端 "Failed to fetch" ✗、
-#     进度条停滞 ✗，而后台其实仍在跑 ✓）
-REGIME_RUN_LOCK = threading.Lock()
-REGIME_RUN_STATE = {
-    'running': False, 'task_id': None,
-    'started_at': None, 'finished_at': None,
-    'result': None, 'error': None,
-}
-
-
-@trading_bp.route('/backtest/regime/run', methods=['POST'])
-def run_regime_backtest():
-    """提交自适应回测（**异步** · 2026-09-20）
-
-    行为：立即返回 `{task_id}` ✓，真正计算在后台线程完成 ✓；
-    前端随后轮询 `/backtest/regime/progress` ✓，结束后调 `/backtest/regime/result` 取结果 ✓。
-    （同步长请求会被服务端超时掐断 ✗，导致前端"回测失败：Failed to fetch"、进度停滞 ✗）
-    """
-    import threading as _th
-    import uuid as _uuid
-    from datetime import datetime as _dtc          # 【2026-09-20】本地导入，避免依赖模块级 dt ✗
-
-    data = request.get_json() or {}
-    with REGIME_RUN_LOCK:
-        if REGIME_RUN_STATE.get('running'):
-            return jsonify({'success': False,
-                            'message': '已有自适应回测正在执行，请等待其完成',
-                            'data': None}), 409
-        REGIME_RUN_STATE.update({
-            'running': True,
-            'task_id': 'regime_' + _uuid.uuid4().hex[:12],
-            'started_at': _dtc.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'finished_at': None, 'result': None, 'error': None,
-        })
-        task_id = REGIME_RUN_STATE['task_id']
-    payload = dict(data)
-    # 【2026-09-20】worker 线程里需要自带请求上下文 → 先取 Flask app 实体 ✓
-    #   （本函数在请求上下文内 ✓，用 current_app 代理取实体最稳 ✓；拿不到则明确报错 ✓）
-    try:
-        from flask import current_app as _cur_app
-        _the_app = _cur_app._get_current_object()
-    except Exception:
-        _the_app = globals().get('app')
-
-    def _worker():
-        try:
-            if _the_app is None:
-                raise RuntimeError('无法获取 Flask app 实例，异步执行终止')
-            with _the_app.test_request_context(
-                    '/api/trading/backtest/regime/run', method='POST', json=payload):
-                resp = run_regime_backtest_sync()
-            body = (resp[0] if isinstance(resp, tuple) else resp)
-            body = body.get_json(silent=True) or {}
-            with REGIME_RUN_LOCK:
-                REGIME_RUN_STATE['result'] = body.get('data') if body.get('success') else None
-                REGIME_RUN_STATE['error'] = (None if body.get('success')
-                                             else (body.get('message') or '回测失败'))
-        except Exception as e:
-            logger.error(f'自适应回测后台执行失败: {e}')
-            with REGIME_RUN_LOCK:
-                REGIME_RUN_STATE['error'] = str(e)
-        finally:
-            with REGIME_RUN_LOCK:
-                REGIME_RUN_STATE['running'] = False
-                REGIME_RUN_STATE['finished_at'] = _dtc.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    _th.Thread(target=_worker, daemon=True).start()
-    return jsonify({'success': True, 'message': '已提交，后台执行中',
-                    'data': {'task_id': task_id, 'async': True}}), 200
-
-
-def run_regime_backtest_sync():
-    """执行自适应回测（同步，与现有策略回测一致；结果入库）
-
-    请求体：{start_date, end_date, confirm_days?, rules?}
-    初始资金/单笔比例/止盈止损等自动取自 backtest_config 表（与 /backtest/run 同源）
-    """
-    try:
-        from trading.regime_backtest_engine import RegimeBacktestEngine
-
-        data = request.get_json() or {}
-        start_date = data.get('start_date', '')
-        end_date = data.get('end_date', '')
-        if not start_date or not end_date:
-            return jsonify({
-                'success': False,
-                'message': '缺少必要的执行条件（开始日期、结束日期）',
-                'data': None
-            }), 400
-
-        # 回测参数来源：DB backtest_config（与 /backtest/run 一致）
-        db_config = db_manager.query_one(
-            "SELECT stop_loss, take_profit, hold_period, initial_capital, buy_amount, "
-            "max_daily_buys, score_threshold FROM backtest_config LIMIT 1") or {}
-
-        def _cfg(key, default):
-            """字段存在但为 NULL 时也要回退默认值"""
-            v = db_config.get(key)
-            return default if v is None else v
-
-        score_threshold = _cfg('score_threshold', 60)
-        max_hold_days = _cfg('hold_period', 10)
-        stop_loss = _cfg('stop_loss', -7)
-        take_profit = _cfg('take_profit', 21)
-        initial_capital = _cfg('initial_capital', 300000)
-        buy_amount = _cfg('buy_amount', 100000)
-        max_daily_buys = _cfg('max_daily_buys', 8)
-
-        # 路由配置：请求传入优先，否则用配置文件（enabled 显式开启）
-        router_cfg = {'enabled': True}
-        if isinstance(data.get('rules'), dict) and data['rules']:
-            router_cfg['rules'] = data['rules']
-        if data.get('confirm_days'):
-            router_cfg['confirm_days'] = int(data['confirm_days'])
-
-        # 入口择时（兜底用）+ 海龟参数（从配置文件读取，与 /backtest/run 同一实现）
-        # 顶层键会被 RegimeBacktestEngine._switch_timing 逐日 merge，因此所有切到 turtle
-        # 的档位都用同一套参数，不会再各自回退到代码内默认预设（short = 10/5）
-        timing_strategy = data.get('timing_strategy', 'turtle')
-        turtle_params = _load_turtle_params(timing_strategy)
-
-        config = {
-            'config_name': '自适应回测',
-            'score_threshold': score_threshold,
-            'hold_period': max_hold_days,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'initial_capital': initial_capital,
-            'buy_amount': buy_amount,
-            'max_daily_buys': max_daily_buys,
-            # 入口择时仅作兜底（每日由 regime 决定）
-            'timing_strategy': timing_strategy,
-            'timing_params': data.get('timing_params', {}) or {},
-            'support_level_method': data.get('support_level_method', 'ma20'),
-            'start_date': start_date,
-            'end_date': end_date,
-            'regime_router': router_cfg,
-        }
-
-        # 【2026-09-23】海龟类参数统一由唯一入口写入顶层 ✓（与 /backtest/run 同一口径 ✓）
-        #   原实现手写 7 键 ✗ → 海龟plus 的 lookback_days / max_additions / add_profit_min
-        #   在自适应回测里从未生效 ✗；且配置精简后会写入字面 None ✗（易误读为"没读到" ✗）。
-        if turtle_params:
-            from trading.timing_strategies import TURTLE_FAMILY_PARAM_KEYS
-            config.update({k: v for k, v in turtle_params.items()
-                           if v is not None and k in TURTLE_FAMILY_PARAM_KEYS})
-            if turtle_params.get('preset') is not None:
-                config['turtle_preset'] = turtle_params['preset']
-
-        logger.info(f"[自适应回测] {start_date} ~ {end_date}, 参数: "
-                    f"initial_capital={initial_capital}, max_daily_buys={max_daily_buys}, "
-                    f"confirm_days={router_cfg.get('confirm_days', '(配置)')}")
-        engine = RegimeBacktestEngine(router_config=router_cfg)
-        result = engine.run_backtest('', config)
-
-        perf = result.get('performance', {})
-
-        # 入库（复用现有 DAO，便于在"回测历史"与普通回测对比）
-        result_id = None
-        try:
-            # 【2026-09-20】把"本次回测选择的条件（各档位策略情况）"整理成**一段文本**持久化，
-            #   供回测历史详情展示。内容：区间 / 确认天数 / 每个档位的选股+择时+仓位+买入方式 /
-            #   人工覆盖（若有）。无未来数据、纯展示用途。
-            _rg_lines = [f"回测区间: {start_date} ~ {end_date}",
-                         f"档位确认天数: {router_cfg.get('confirm_days', 1)}"]
-            _rules = router_cfg.get('rules') or {}
-            for _rg in ('明确', '萌芽', '震荡'):
-                _r = _rules.get(_rg) or {}
-                _rg_lines.append(
-                    f"[{_rg}] 选股={_r.get('selector') or '（未配置）'}"
-                    f" | 择时={_r.get('timing') or '（未配置）'}"
-                    f" | 仓位={_r.get('position') if _r.get('position') is not None else '（未配置）'}"
-                    f" | 买入={_r.get('buy_execution') or _r.get('buy') or 'open'}")
-            _manual = router_cfg.get('manual_override') or {}
-            if _manual.get('enabled'):
-                _rg_lines.append(
-                    f"人工覆盖(生效): 选股={_manual.get('selector')}"
-                    f" 择时={_manual.get('timing')} 仓位={_manual.get('position')}")
-            # 实际生效的档位（取首次切换记录，便于核对）
-            _switches = result.get('strategy_switches') or []
-            if _switches:
-                _first = _switches[0]
-                _rg_lines.append(f"首次策略切换: {_first.get('date')} "
-                                 f"{_first.get('from')} → {_first.get('to')}"
-                                 f"（regime={_first.get('regime')}）")
-            router_config_text = '\n'.join(_rg_lines)
-
-            save_result = {
-                'strategy_name': f"自适应回测({result.get('strategy_name', '')})",
-                'support_level_method': 'regime',
-                'backtest_name': f"自适应_{start_date}_{end_date}",
-                'start_date': start_date,
-                'end_date': end_date,
-                'total_trades': perf.get('total_trades', 0),
-                'win_trades': perf.get('win_trades', 0),
-                'loss_trades': perf.get('loss_trades', 0),
-                'win_rate': perf.get('win_rate', 0),
-                'avg_return': perf.get('avg_return', 0),
-                'total_return': perf.get('total_return', 0),
-                'max_return': perf.get('max_return', 0),
-                'min_return': perf.get('min_return', 0),
-                'profit_factor': perf.get('profit_factor', 0),
-                'profit_loss_ratio': perf.get('profit_loss_ratio', 0),
-                'max_drawdown': perf.get('max_drawdown', 0),
-                'sharpe_ratio': perf.get('sharpe_ratio', 0),
-                # 【2026-09-22 修复】同上：补上漏传的 avg_hold_days（否则落库恒为 0 ✗）
-                'avg_hold_days': perf.get('avg_hold_days', 0),
-                'initial_capital': initial_capital,
-                'final_capital': result.get('final_capital', initial_capital),
-                # 各档位策略配置摘要（文本）→ 回测历史详情展示
-                'router_config': router_config_text,
-                # ★【2026-10-03 用户要求 ✓】自适应回测同样落库**主要参数设置情况** ✓
-                #   （与普通回测同一实现 ✓ ⇒ 两份结果**可直接逐项对比** ✓）
-                'param_snapshot': result.get('param_snapshot'),
-                'data_fingerprint': result.get('data_fingerprint'),
-                'data_gate': result.get('data_gate'),
-            }
-            result_id = backtest_dao.save_result(save_result)
-
-            trades = result.get('trades') or []
-            for trade in trades:
-                trade['result_id'] = result_id
-                trade.setdefault('stock_code', '')
-                trade.setdefault('stock_name', '')
-                if not trade.get('selection_date'):
-                    trade['selection_date'] = trade.get('buy_date', start_date)
-                trade.setdefault('buy_date', '')
-                trade.setdefault('buy_price', 0)
-                trade.setdefault('sell_date', '')
-                trade.setdefault('sell_price', 0)
-                trade.setdefault('buy_amount', 0)
-                trade.setdefault('sell_amount', 0)
-                trade.setdefault('profit', trade.get('profit_loss', 0))
-                trade.setdefault('profit_rate', trade.get('return_rate', 0))
-                trade.setdefault('trade_type', 'normal')
-            if trades:
-                backtest_dao.save_trades_batch(trades)
-
-            # 保存收益曲线（与普通回测口径一致）：
-            #   capital_history[0] = 初始资金，capital_history[1:] 对应 dates
-            #   ⚠️ 之前漏了这一步，导致"回测历史"里打开自适应回测没有收益图
-            try:
-                ch = result.get('capital_history') or []
-                ds = result.get('dates') or []
-                if ch and ds:
-                    equity_curve = [{
-                        'date': str(start_date),
-                        'capital': ch[0],
-                        'return_rate': 0.0,
-                    }]
-                    for i, dv in enumerate(ds):
-                        cap = ch[i + 1] if (i + 1) < len(ch) else ch[-1]
-                        try:
-                            cap = float(cap)
-                        except (TypeError, ValueError):
-                            cap = 0.0
-                        if cap > 0 and initial_capital > 0:
-                            rr = ((cap / initial_capital) - 1) * 100
-                        else:
-                            rr = 0.0
-                        equity_curve.append({
-                            'date': str(dv),
-                            'capital': cap,
-                            'return_rate': rr,
-                        })
-                    backtest_dao.save_equity_curve(result_id, equity_curve)
-                    logger.info(f'自适应回测保存收益曲线 {len(equity_curve)} 条')
-                else:
-                    logger.warning('自适应回测缺少 capital_history/dates，收益曲线未入库')
-            except Exception as _e:
-                logger.warning(f'自适应回测收益曲线入库失败（不影响返回）: {_e}')
-        except Exception as e:
-            logger.warning(f'自适应回测结果入库失败（不影响返回）: {e}')
-
-        # 补充每笔订单的“持仓结局”：前端成交明细据 position_status 区分“已平仓/期末持仓中”。
-        # 放在入库 try 之外，保证入库失败时响应仍带配对结果（原实现直接返回引擎原始 trades，
-        # 缺字段被前端默认成“持仓中”，导致 324 笔买/加仓被误计为“期末持仓中”）
-        _attach_position_status(result.get('trades') or [])
-
-        return jsonify({
-            'success': True,
-            'message': '自适应回测完成',
-            'data': {
-                'result_id': result_id,
-                'performance': perf,
-                'initial_capital': initial_capital,
-                'final_capital': result.get('final_capital'),
-                'trades': result.get('trades', []),
-                'capital_history': result.get('capital_history', []),
-                'dates': result.get('dates', []),
-                'regime_stats': result.get('regime_stats', []),
-                'strategy_switches': result.get('strategy_switches', []),
-                'timing_strategy': result.get('timing_strategy', {}),
-            }
-        }), 200
-    except Exception as e:
-        logger.error(f'自适应回测失败: {str(e)}')
-        import traceback
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'success': False,
-            'message': f'自适应回测失败: {str(e)}',
-            'data': None
-        }), 500
-
-
-@trading_bp.route('/backtest/regime/result', methods=['GET'])
-def get_regime_run_result():
-    """取回异步自适应回测的结果（2026-09-20 ✓）
-
-    返回：{running, task_id, result(与 /run 同步版的 data 同结构), error}
-    """
-    try:
-        with REGIME_RUN_LOCK:
-            st = dict(REGIME_RUN_STATE)
-        return jsonify({'success': True, 'data': {
-            'running': st.get('running'),
-            'task_id': st.get('task_id'),
-            'started_at': st.get('started_at'),
-            'finished_at': st.get('finished_at'),
-            'result': st.get('result'),
-            'error': st.get('error'),
-        }}), 200
-    except Exception as e:
-        logger.error(f'获取自适应回测结果失败: {str(e)}')
-        return jsonify({'success': False, 'message': str(e), 'data': None}), 500
-
-
-@trading_bp.route('/backtest/regime/progress', methods=['GET'])
-def get_regime_backtest_progress():
-    """自适应回测进度（内存态，前端轮询）
-
-    返回：{running, percent, done_days, total_days, current_date, message,
-           started_at, finished_at}
-    """
-    try:
-        from trading.regime_backtest_engine import get_regime_progress
-
-        return jsonify({'success': True, 'data': get_regime_progress()}), 200
-    except Exception as e:
-        logger.error(f'获取自适应回测进度失败: {str(e)}')
-        return jsonify({'success': False, 'message': str(e), 'data': None}), 500
-
-
-@trading_bp.route('/backtest/progress', methods=['GET'])
-def get_backtest_progress():
-    """单次回测进度（内存态，前端轮询）
-
-    返回：{running, percent, done_days, total_days, current_date,
-           started_at, finished_at, message, result_id}
-
-    说明：
-        - started_at 用于前端计算"已耗时"和"预计剩余时间"
-        - result_id 仅在回测成功完成并由 /backtest/run 保存后才有值；
-          本接口返回的 result_id 可能为 None（run_backtest 内部不感知数据库ID）
-        - 批量回测执行单个任务时也会更新此进度，批次3改造时由
-          /backtest/batch/status 合并展示
-    """
-    try:
-        # 局部导入，避免循环依赖
-        from trading.backtest_engine import get_backtest_progress
-
-        # 返回进度快照副本
-        return jsonify({'success': True, 'data': get_backtest_progress()}), 200
-    except Exception as e:
-        logger.error(f'获取单次回测进度失败: {str(e)}')
-        return jsonify({'success': False, 'message': str(e), 'data': None}), 500
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e

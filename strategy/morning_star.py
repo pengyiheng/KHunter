@@ -34,20 +34,11 @@ class MorningStarStrategy(BaseStrategy):
     def __init__(self, params=None):
         # 默认参数
         default_params = {
-<<<<<<< HEAD
             'lookback_days': 3,         # 回溯天数（只需检查最近3天）
             'small_body_ratio': 0.3,    # 第二根K线实体与第一根K线实体的比例阈值
             'long_candle_ratio': 0.5,   # 第三根K线实体与第一根K线实体的最小比例（已弃用）
             'volume_ratio': 1.5,        # 第三根K线成交量与第二根K线的比例
             'first_body_threshold': 0.03,# 第一根K线（长阴线）实体最小百分比（3%）
-=======
-            'lookback_days': 3,              # 回溯天数（只需检查最近3天）
-            'small_body_ratio': 0.3,         # 第二根K线实体与第一根K线实体的比例阈值
-            'long_candle_ratio': 0.5,        # 第三根K线实体与第一根K线实体的最小比例（已弃用）
-            'volume_ratio': 1.5,             # 第三根K线成交量与第二根K线的比例
-            'first_body_threshold': 0.03,    # 第一根K线（长阴线）实体最小百分比（3%）
-            'third_candle_rise_pct': 5,      # 第三根K线（长阳线）最低涨幅百分比（%）
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         }
 
         # 合并用户参数
@@ -56,34 +47,9 @@ class MorningStarStrategy(BaseStrategy):
 
         super().__init__("启明星策略", default_params)
 
-<<<<<<< HEAD
     def calculate_indicators(self, df) -> pd.DataFrame:
         """
         计算启明星策略所需的指标
-=======
-    def _validate_data(self, df) -> bool:
-        """
-        重写基类数据验证：启明星策略只需 3 根 K 线，不需要基类的 20 行限制
-        """
-        if df is None or df.empty:
-            return False
-        # 本策略只需 3 根 K 线即可判断启明星形态
-        if len(df) < 3:
-            return False
-        # 检查必要字段
-        required_fields = ['date', 'open', 'high', 'low', 'close', 'volume']
-        for field in required_fields:
-            if field not in df.columns:
-                return False
-        return True
-
-    def calculate_indicators(self, df) -> pd.DataFrame:
-        """
-        计算启明星策略所需的指标
-        
-        注意：入参 df 为倒序数据（index=0 是最新日期），MA5 计算需先转为
-        正序再转回，否则倒序中 iloc[0] 的 rolling(5) 窗口不够，MA5 始终为 NaN。
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """
         result = df.copy()
 
@@ -97,7 +63,6 @@ class MorningStarStrategy(BaseStrategy):
         # 计算成交量比例
         result['volume_ratio'] = result['volume'] / result['volume'].shift(1)
 
-<<<<<<< HEAD
         # 计算5日均线
         result['ma5'] = result['close'].rolling(window=5).mean()
 
@@ -106,16 +71,6 @@ class MorningStarStrategy(BaseStrategy):
         # 对于正序数据：ffill()使用历史数据（安全），bfill()使用未来数据（未来函数）
         # 所以只使用ffill()向前填充
         # result = result.ffill().bfill()  # ⚠️ bfill是未来函数！
-=======
-        # 计算5日均线：rolling 必须用正序数据，否则倒序中最新行窗口不足，MA5 始终 NaN
-        asc_df = result.sort_values('date', ascending=True).copy()
-        asc_df['ma5'] = asc_df['close'].rolling(window=5).mean()
-        # 按日期对齐回原 DataFrame，保证倒序数据中每行都有正确的 MA5 值
-        ma5_map = dict(zip(asc_df['date'], asc_df['ma5']))
-        result['ma5'] = result['date'].map(ma5_map)
-
-        # 填充缺失值（仅 ffill，不使用 bfill 避免未来函数）
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         result = result.ffill()
 
         # 计算市值
@@ -141,12 +96,7 @@ class MorningStarStrategy(BaseStrategy):
 
         # 条件3：第三根K线（长阳线）
         volume_ratio = self.params['volume_ratio']
-<<<<<<< HEAD
         criteria.append(f"3. 第三根K线（长阳线）：收盘价 > 开盘价，涨幅 > 5%，收盘价突破5日均线，成交量 >= 第二根K线成交量的{volume_ratio:.1f}倍，表示反转上升")
-=======
-        rise_pct = self.params.get('third_candle_rise_pct', 5)
-        criteria.append(f"3. 第三根K线（长阳线）：收盘价 > 开盘价，涨幅 > {rise_pct}%，收盘价突破5日均线，成交量 >= 第二根K线成交量的{volume_ratio:.1f}倍，表示反转上升")
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
         return criteria
 
@@ -182,18 +132,10 @@ class MorningStarStrategy(BaseStrategy):
         second_candle = df.iloc[1]     # 第二根K线
         third_candle = df.iloc[2]      # 第一根K线（最旧/阴线）
 
-<<<<<<< HEAD
         # 快速检查：第三根K线涨幅是否 > 5%
         # 只做快速过滤，详细条件在 _is_morning_star_pattern 中逐条验证
         third_candle_change = (first_candle['close'] - first_candle['open']) / first_candle['open'] * 100
         if third_candle_change <= 5:
-=======
-        # 快速检查：第三根K线涨幅是否达到阈值
-        # 只做快速过滤，详细条件在 _is_morning_star_pattern 中逐条验证
-        rise_pct = self.params.get('third_candle_rise_pct', 5)
-        third_candle_change = (first_candle['close'] - first_candle['open']) / first_candle['open'] * 100
-        if third_candle_change <= rise_pct:
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             return []
 
         # 检查是否满足启明星形态
@@ -243,16 +185,9 @@ class MorningStarStrategy(BaseStrategy):
         if not third_is_bullish:
             return False
 
-<<<<<<< HEAD
         # 第三根阳线涨幅 > 5%
         third_candle_change = (first_candle['close'] - first_candle['open']) / first_candle['open'] * 100
         if third_candle_change <= 5:
-=======
-        # 第三根阳线涨幅达到阈值
-        rise_pct = self.params.get('third_candle_rise_pct', 5)
-        third_candle_change = (first_candle['close'] - first_candle['open']) / first_candle['open'] * 100
-        if third_candle_change <= rise_pct:
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             return False
 
         # 第三根K线必须突破5日均线
@@ -260,15 +195,9 @@ class MorningStarStrategy(BaseStrategy):
         if pd.isna(ma5) or first_candle['close'] <= ma5:
             return False
 
-<<<<<<< HEAD
         # 第一根K线（最旧）：长阴线，实体百分比 > 1%
         # 启明星形态的核心是第一根必须是长阴线，表示下跌趋势
         first_body_threshold = self.params.get('first_body_threshold', 0.01)
-=======
-        # 第一根K线（最旧）：长阴线，实体百分比 > 阈值
-        # 启明星形态的核心是第一根必须是长阴线，表示下跌趋势
-        first_body_threshold = self.params.get('first_body_threshold', 0.03)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         # 计算实体百分比：|close - open| / open
         first_body = abs(third_candle['close'] - third_candle['open']) / third_candle['open']
         first_is_bearish = third_candle['close'] < third_candle['open']

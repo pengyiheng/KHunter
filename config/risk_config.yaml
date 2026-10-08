@@ -2,13 +2,6 @@ cache:
   cache_dir: data/risk_cache
   cache_expire_hours: 24
   enabled: true
-<<<<<<< HEAD
-=======
-market_index_adx:
-  enabled: true
-  index_code: 000985.CSI
-  period: 14
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 evt:
   enabled: false
   extrapolation_range: 5
@@ -17,11 +10,7 @@ evt:
 risk:
   calculation_method: hybrid
   confidence_level: 0.99
-<<<<<<< HEAD
   index_code: 932000.CSI
-=======
-  index_code: 000905.SH
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
   lookback_days: 120
   lambda_ewma: 0.85
   risk_levels:

@@ -14,9 +14,9 @@
   3. 北向资金（最近季度）- 权重 20%
   4. 主力与散户方向 - 权重 25%
 
-一票否决条件（2026-09-11 增加"占成交额比"强度口径）：
-  - 5日主力净额 < -10000 万元 且 大单净流入占比 < -5%（无占比字段时回退 净额/成交额）
-  - 大单净流出占比 > 1% 且 小单净流入占比 > 1%（出货信号）
+一票否决条件：
+  - 5日主力净额 < -1000万元
+  - 大单净流入 < 0 且 小单净流入 > 0（出货信号）
 """
 
 import json
@@ -49,22 +49,8 @@ WEIGHT_DIRECTION = 0.25       # 主力散户方向权重
 
 # 一票否决得分
 VETO_SCORE = -100
-# 主力净流入一票否决阈值（万元，绝对口径）
+# 主力净流入一票否决阈值（万元）
 VETO_MAIN_NET_FLOW_THRESHOLD = -10000
-# 【2026-09-11】主力净额"占成交额比"一票否决阈值（%，相对口径）
-#   问题：绝对阈值（-10000 万元）对不同成交额的股票不等价——
-#        大成交额股票正常的资金波动就可能超过 1 亿，容易被错杀。
-#   处理：采用**联合判定**——仅当【绝对额超阈】且【净额/成交额 < 本阈值】时才否决；
-#        成交额很大导致占比很轻时，视为正常波动 → 不否决。
-#        设 None 可关闭相对口径（回退为纯绝对阈值）。
-VETO_NET_FLOW_RATIO_THRESHOLD = -5.0
-# 【2026-09-11】出货信号（条件2）占比阈值（%）：需**同时**满足——
-#   ① 大单净流出额占成交额 >  1%
-#   ② 小单净流入额占成交额 >  1%
-#   原口径（大单净流入<0 且 小单净流入>0）不含强度，轻微流动即被判出货；
-#   改为占比口径后，只有"量级显著"的流出/流入才判出货。
-#   设 None 可关闭（回退为纯方向判定）。
-VETO_DISTRIBUTION_RATIO_THRESHOLD = 1.0
 
 # Tushare API 重试配置
 MAX_RETRIES = 3        # 最大重试次数
@@ -150,48 +136,8 @@ class MoneyflowScorer:
         self._pro = None
         # 初始化内存缓存
         self._cache = MemoryCache()
-<<<<<<< HEAD
         # 记录初始化日志（改为debug级别，避免频繁输出）
         logger.debug("资金面评分器初始化完成")
-=======
-        # 【2026-09-25 M1】保存 db_manager ✓ —— 本地读取（stock_moneyflow_daily）必需
-        #   （此前构造参数未落属性 ✗，本地路径会误用全局库 ✗）
-        self.db_manager = db_manager
-
-        # 【2026-09-25 M1】本地优先策略 ✓
-        #   · 回测/实盘**统一只读本地**（`stock_moneyflow_daily` ✓）；
-        #     本地窗口不足 → **直接报错** ✗（不再静默回退在线 ✗，杜绝口径漂移 ✓）
-        #   · 仅当显式开启（环境变量 KHUNTER_ALLOW_ONLINE_FALLBACK=1 ✓）才允许在线回退，
-        #     且离线模式下依旧会被 online_guard 拦住 ✗
-        import os as _os
-        self.allow_online_fallback = _os.environ.get(
-            'KHUNTER_ALLOW_ONLINE_FALLBACK', '0').strip() in ('1', 'true', 'True')
-        #: 数据源 ✓（**保真口径** ✓；不做跨源混用 ✗）
-        # 【2026-09-26 用户决策·**方案 C 保真** ✓】由 `moneyflow_dc`（东财 ✗）
-        #   **改回 `moneyflow_ths`（同花顺 ✓）**：
-        #   · 两源**字段同名但语义不同** ✗✓ —— 同股同日 600 条对照实测：
-        #     `main_net_flow` **99.8% 数值不同、1/3 符号相反** ✗；
-        #     大单占比维度均分 +22.1 → -10.3 ✗；出货否决率 **5.2% → 19.3%** ✗
-        #   · 评分阈值/权重**全部在同花顺口径上标定** ✓ ⇒ 必须回到同源 ✓
-        #     （否则同一套阈值"物理含义变了"✗，股票池被系统性改写 ✗）
-        #   · 覆盖：同花顺自 **2024-12-24** 起 ✓（实测 ✓）
-        #     ⇒ 更早区间**暂不支持回测** ✗ —— 由数据闸门**明确拒绝** ✓，不静默出结果 ✗
-        self.moneyflow_source = self._resolve_moneyflow_source()
-        # 【2026-09-28 减噪 ✗→✓】原有一行"资金面评分器初始化完成"✗（先 INFO 后降 DEBUG ✗）——
-        #   实测**每个评分器实例都打一次** ✗ ⇒ 单日日志 **19,907 行** ✗✓（占全天 7% ✗）。
-        #   该行**零信息量** ✓（构造成功本就无需宣告 ✓，失败会直接抛错 ✗）
-        #   ⇒ **整行删除** ✓（DEBUG 级也删 ✗ —— 你的日志本就开着 DEBUG ✗，降级等于没降 ✗）。
-
-    @staticmethod
-    def _resolve_moneyflow_source() -> str:
-        """解析资金流数据源 ✓（**默认 `moneyflow_ths` = 同花顺 ✓** = 保真口径 ✓）
-
-        委派给 `utils.moneyflow_source.resolve()` ✓（**单一事实源** ✓ ——
-        数据闸门与评分器共用同一解析 ✓，杜绝"两处各写一份规则"✗）。
-        """
-        from utils.moneyflow_source import resolve
-        return resolve()
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
 
     def _load_tushare_token(self) -> str:
         """
@@ -206,9 +152,7 @@ class MoneyflowScorer:
                 config = json.load(f)
             # 优先使用 token 字段，兼容 api_key 字段
             token = config.get("token") or config.get("api_key", "")
-            # 【2026-09-28 减噪 ✗→✓】原 `logger.debug("Tushare token 加载成功")`✗ ——
-            #   实测**每实例一行**✗ ⇒ 单日 **19,922 行** ✗（DEBUG 级照样刷 ✗）⇒ 删除 ✓；
-            #   读取**失败**仍在下面 `warning` ✗（该留的信号一个不少 ✓）。
+            logger.debug("Tushare token 加载成功")
             return token
         except Exception as e:
             # 配置文件读取失败，返回空字符串
@@ -326,159 +270,11 @@ class MoneyflowScorer:
         # 深圳交易所（0开头、3开头）
         return f"{code}.SZ"
 
-    def _get_local_conn(self):
-        """取本地库连接（离线 ✓）"""
-        try:
-            if getattr(self, 'db_manager', None) is not None:
-                return self.db_manager.connect()
-        except Exception:
-            pass
-        from utils.global_db import get_global_db
-        return get_global_db().connect()
-
-    def _fetch_moneyflow_local(self, stock_code: str, score_date: str) -> Optional[pd.DataFrame]:
-        """【2026-09-25 M1】从**本地表**读取近 5 个交易日资金流（离线 ✓）
-        【2026-09-26 方案 C ✓】数据源 = `self.moneyflow_source`（默认**同花顺** ✓ = 保真口径 ✓）
-
-        关键设计：
-          · 窗口按**本地交易日历**取（缺一天就会被发现 ✓，不会被更早日期顶替 ✗）
-          · 返回的行**不包含** `net_d5_amount` ✗ ⇒ 下游 `_extract_from_tushare` 自动走
-            `Σ(net_amount)` 分支 ✓ = **本地 5 日聚合口径** ✓（不再依赖源端聚合字段 ✗）
-          · 窗口不完整 → 返回 None → 由调用方按"数据缺失"**报错** ✗（严格模式 ✓）
-
-        Returns:
-            DataFrame（列与源端一致 ✓）或 None（本地数据不足 ✗）
-        """
-        import pandas as _pd
-        from utils.local_calendar import recent_trade_dates_local
-        from utils.data_collectors.moneyflow_dc_collector import load_window_rows
-        conn = self._get_local_conn()
-        code6 = stock_code.split('.')[0][:6]
-        end_iso = self._normalize_date_iso(score_date)
-        try:
-            window = recent_trade_dates_local(conn, end_iso, window=5)
-        except Exception as e:
-            logger.warning(f'本地交易日历不可用（{stock_code}@{score_date}）: {e}')
-            return None
-        # 【2026-09-25 新增】已登记的**上游源侧缺口** ✓ 豁免（**显式告警** ✓，不静默 ✗）
-        #   源本身没有这一天 ✗ → 补也补不上 ✗。若仍按"完整交易日"硬要求，
-        #   则窗口含该日的每一次评分都会直接失败 ✗（回测整段崩 ✗）。
-        #   故按登记表豁免 ✓，但：① WARNING 打印具体日期 ✓；② 期望天数同步下调 ✓；
-        #   ③ 真漏采（未登记）**依旧报错** ✗ —— 豁免范围严格限定在登记表内 ✓
-        from utils.data_collectors.source_gaps import split_window
-        self._last_gap_known_source = False      # ★ 每次**先复位** ✓，防上一次的判定泄漏 ✗
-        expected_dates, gaps_in_window = split_window(window, self.moneyflow_source)
-        if gaps_in_window:
-            logger.warning(
-                f'资金流窗口含**已登记上游源侧缺口** ✓ {gaps_in_window}'
-                f'（{stock_code}@{score_date}）→ 本次按 {len(window) - len(gaps_in_window)} 日计算 ✓；'
-                f'明细见 config/data_source_gaps.yaml ✓')
-        expected_dates = [d for d in window if d not in gaps_in_window]
-        rows = load_window_rows(conn, code6, window, source=self.moneyflow_source)
-        if len(rows) < len(expected_dates):
-            _missing = [d for d in expected_dates if d not in {r['trade_date'] for r in rows}]
-            # ★【2026-09-28】**个股级**上游源侧缺口 ✓（实测 92 只 × `2025-03-15 ~ 2026-03-09` ✗）
-            #   ⇒ 属**已登记**的**永久**缺口 ✓ ⇒ 降为 **INFO** ✓（登记 ≠ 忽略 ✗：仍打日志 ✓、
-            #   仍**不参与**否决 ✓），并给上层留标记 ✓ 供其同样降级 ✓。
-            _known = False
-            try:
-                from utils.data_collectors.source_gaps import (describe_stock_gap,
-                                                               is_stock_source_gap)
-                _known = bool(_missing) and all(
-                    is_stock_source_gap(self.moneyflow_source, code6, d) for d in _missing)
-                if _known:
-                    logger.info(
-                        f'本地资金流缺失属**已登记上游源侧个股缺口** ✓ '
-                        f'{stock_code}@{score_date} 缺 {len(_missing)} 日 ⇒ 跳过资金流否决 ✓'
-                        f'（{describe_stock_gap(self.moneyflow_source, _missing[0])}）')
-            except Exception as _e:
-                logger.debug(f'个股级缺口判定异常（按未登记处理 ✗）: {_e}')
-            self._last_gap_known_source = _known
-            if not _known:
-                logger.warning(
-                    f'本地资金流数据不足: {stock_code}@{score_date} '
-                    f'期望 {len(expected_dates)} 日，实际 {len(rows)} 日 '
-                    f'(缺失 {_missing}) ✗')
-            return None
-        df = _pd.DataFrame(rows)
-        # 【2026-09-26 方案 C ✓】**保留** `net_d5_amount` ✗→✓（此前 M1 会剔除它 ✗）
-        #   原因 ✓：同花顺口径下，旧评分路径**正是**用源端 `net_d5_amount`
-        #   （5 日主力净额 ✓）来算 `main_net_flow` 的 ✓ —— 实测逐条可复现
-        #   （如 `600076 @ 2026-09-21` 旧值 -2855.1 与源端 d5 **分毫不差** ✓）。
-        #   剔除它 ⇒ 退化为 `Σ(net_amount)` ⇒ **与改前口径不同** ✗ ⇒ 保真失败 ✗。
-        #   注：东财行该列为 NULL ✓ ⇒ 自动落到 `Σ(net_amount)` 分支 ✓（互不干扰 ✓）。
-        df['ts_code'] = stock_code
-        return df
-
-    @staticmethod
-    def _normalize_date_iso(date_str: str) -> str:
-        """YYYYMMDD / YYYY-MM-DD → YYYY-MM-DD"""
-        s = str(date_str).strip()
-        return f'{s[:4]}-{s[4:6]}-{s[6:8]}' if (len(s) == 8 and s.isdigit()) else s[:10]
-
-    def _gap_missing_dates(self, stock_code: str, score_date: str, window: int = 5) -> list:
-        """尽力算出"本地缺哪几天"✓（**只读查询** ✓；任何异常 ⇒ `[]` ✓，**绝不**阻断报错 ✗）
-
-        ★ 2026-09-28 新增 ✓：给 `gap_fix_hint` 提供"缺口日期" ✓ ——
-        只有知道**缺的是哪几天** ✓，才能判断"滚动 3 日更新"是否够 ✗✓
-        （实测 `000862`：缺的是 6 个月前的历史日 ⇒ 滚动更新**永远补不到** ✗）。
-        """
-        try:
-            from utils.global_db import get_global_db
-            from utils.local_calendar import recent_trade_dates_local
-            _sd = str(score_date)[:10]
-            if '-' not in _sd:
-                _sd = f'{_sd[:4]}-{_sd[4:6]}-{_sd[6:8]}'
-            conn = get_global_db()
-            dates = recent_trade_dates_local(conn, _sd, window=window)
-            code = str(stock_code).split('.')[0]
-            rows = conn.query(
-                'SELECT trade_date FROM stock_moneyflow_daily WHERE stock_code=? '
-                'AND source=? AND trade_date BETWEEN ? AND ?',
-                (code, self.moneyflow_source, dates[0], dates[-1]))
-            have = {str(r['trade_date'])[:10] for r in rows}
-            return [d for d in dates if d not in have]
-        except Exception as e:
-            logger.debug(f'缺口日期推算失败（不影响报错 ✓）: {e}')
-            return []
-
     def _fetch_moneyflow_data(
         self, stock_code: str, score_date: str
     ) -> Optional[pd.DataFrame]:
-        """资金流取数入口 ✓：**本地优先**（M1 定稿 ✓）
-
-        1. 先读本地（`stock_moneyflow_daily` ✓，按本地日历取 5 日窗口 ✓）
-        2. 本地不足 → 默认**报错** ✗（回测不联网 ✓）
-           仅 `KHUNTER_ALLOW_ONLINE_FALLBACK=1` 时才回退在线 ✓（且离线模式下仍被闸门拦截 ✗）
         """
-        local = self._fetch_moneyflow_local(stock_code, score_date)
-        if local is not None and not local.empty:
-            return local
-        if not self.allow_online_fallback:
-            from utils.moneyflow_source import gap_fix_hint
-            from utils.online_guard import require_local_data
-            require_local_data(
-                f'资金流向(近5个交易日, 源={self.moneyflow_source})',
-                False,
-                detail=(f'{stock_code} @ {score_date}：本地表 '
-                        f'stock_moneyflow_daily 窗口不足 ✗\n'
-                        f'  说明：回测只读本地数据，不联网、不回退其它源 ✗\n'
-                        # ★【2026-09-28】已登记的**个股级上游缺口** ⇒ 明确标记 ✓
-                        #   （上层据此把日志降为 INFO ✓；属**永久缺口** ✗ ⇒ 无需补采 ✓）
-                        + ('  **[已知上游源缺口]** ✓ 已登记 config/data_source_gaps.yaml ✓ ⇒ '
-                           '这些 (股, 日) 源端本就没有 ✗（**永久缺口** ✗，补采也补不上 ✓）、'
-                           '跳过资金流否决 ✓（不误判 ✓）\n'
-                           if getattr(self, '_last_gap_known_source', False) else '')
-                        # 按缺口**新 / 旧**给**真能补上**的指引 ✗→✓（旧文案一律"滚动 3 日"✗）
-                        + gap_fix_hint(self._gap_missing_dates(stock_code, score_date),
-                                       src=self.moneyflow_source)))
-        return self._fetch_moneyflow_data_online(stock_code, score_date)
-
-    def _fetch_moneyflow_data_online(
-        self, stock_code: str, score_date: str
-    ) -> Optional[pd.DataFrame]:
-        """
-        （**仅实盘/数据更新允许** ✓）从 Tushare moneyflow_ths 接口获取个股资金流向数据
+        从 Tushare moneyflow_ths 接口获取个股资金流向数据
 
         获取近5个交易日的资金流向数据。
         个股图谱应该取实时数据，不从本地数据库降级。
@@ -489,12 +285,6 @@ class MoneyflowScorer:
         返回:
             DataFrame: 资金流向数据，失败返回 None
         """
-        # 【2026-09-25 M1】在线取数检查点 ✓：回测期间（离线模式）调用到此将直接抛错 ✗
-        from utils.online_guard import PURPOSE_SCORE, guard_online_call
-        # 【2026-09-25 契约 ✓】**评分侧只读本地** ✗ —— 此处为在线回退 ✗ ⇒ 任何模式下都**必须失败** ✗✓
-        #   （不得用 `purpose='update'` 豁免 ✗；缺数据请先运行"数据更新" ✓）
-        guard_online_call('Tushare moneyflow_ths 取数（评分回退）', purpose=PURPOSE_SCORE)
-
         # 构建缓存键
         cache_key = f"moneyflow_{stock_code}_{score_date}"
         # 检查缓存
@@ -535,7 +325,6 @@ class MoneyflowScorer:
             # Tushare 返回空数据，尝试降级到 moneyflow 接口获取历史数据
             logger.warning(f"Tushare moneyflow_ths 返回空数据: {stock_code}，尝试 moneyflow 接口")
             return self._fetch_moneyflow_historical(stock_code, start_date, end_date)
-<<<<<<< HEAD
         except Exception as e:
             # 获取实时数据失败，尝试降级到 moneyflow 接口
             logger.error(f"Tushare moneyflow_ths 获取失败: {stock_code}, {e}，尝试 moneyflow 接口")
@@ -675,172 +464,18 @@ class MoneyflowScorer:
         return metrics
 
     def _fetch_north_fund_data(self, stock_code: str) -> Optional[pd.DataFrame]:
-=======
-        except Exception as e:
-            # 获取实时数据失败，尝试降级到 moneyflow 接口
-            logger.error(f"Tushare moneyflow_ths 获取失败: {stock_code}, {e}，尝试 moneyflow 接口")
-            return self._fetch_moneyflow_historical(stock_code, start_date, end_date)
-
-    def _fetch_moneyflow_historical(
-        self, stock_code: str, start_date: str, end_date: str
-    ) -> Optional[pd.DataFrame]:
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
-        """
-        从 Tushare moneyflow 接口获取个股历史资金流向数据
-
-        moneyflow 接口与 moneyflow_ths 的区别：
-        - moneyflow_ths：同花顺数据，字段 net_amount 是主力净流入，仅近期数据
-        - moneyflow：沪深A数据，字段 net_mf_amount 是全市场净流入，支持历史数据
-
-        本方法作为 moneyflow_ths 的降级方案，用于获取历史数据。
-
-        参数:
-            stock_code: 股票代码（6位数字）
-            start_date: 开始日期（YYYYMMDD 格式）
-            end_date: 结束日期（YYYYMMDD 格式）
-        返回:
-            DataFrame: 资金流向数据，失败返回 None
-        """
-        # 构建缓存键
-        cache_key = f"moneyflow_hist_{stock_code}_{start_date}_{end_date}"
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            logger.debug(f"命中历史资金流向缓存: {cache_key}")
-            return cached
-
-        # 转换为 Tushare 格式代码
-        ts_code = self._convert_ts_code(stock_code)
-
-        try:
-            pro = self._get_pro()
-            # 调用 Tushare moneyflow 接口获取历史数据
-            df = self._call_tushare_with_retry(
-                pro.moneyflow,
-                ts_code=ts_code,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            # 检查返回数据是否有效
-            if df is not None and not df.empty:
-                logger.debug(
-                    f"moneyflow 接口获取资金流向数据成功: {stock_code}, {len(df)} 条记录"
-                )
-                # 按日期降序排序（最新日期在前）
-                if "trade_date" in df.columns:
-                    df = df.sort_values("trade_date", ascending=False)
-                # 写入缓存
-                self._cache.set(cache_key, df)
-                return df
-            # moneyflow 也返回空数据
-            logger.warning(f"Tushare moneyflow 返回空数据: {stock_code}")
-            return None
-        except Exception as e:
-            logger.error(f"Tushare moneyflow 获取失败: {stock_code}, {e}")
-            return None
-
-    def _extract_from_moneyflow(self, df: pd.DataFrame) -> Dict[str, float]:
-        """
-        从 Tushare moneyflow 格式数据中提取指标
-
-        moneyflow 接口的字段：
-        - net_mf_amount: 净流入额（万元）= 大单 + 中单 + 小单 + 特大单
-        - buy_lg_amount, sell_lg_amount: 大单买入卖出金额（万元）
-        - buy_sm_amount, sell_sm_amount: 小单买入卖出金额（万元）
-        - buy_elg_amount, sell_elg_amount: 特大单买入卖出金额（万元）
-
-        参数:
-            df: moneyflow 格式的 DataFrame
-        返回:
-            Dict: 评分指标字典
-        """
-        metrics = {
-            "net_flow_5d": 0.0,
-            "daily_ratios": [],
-            "large_net": 0.0,
-            "small_net": 0.0,
-        }
-
-        if df is None or df.empty:
-            return metrics
-
-        # 5日成交额（用于"净额占成交额比"的相对口径；缺失时保持 0 → 回退绝对阈值）
-        if "amount" in df.columns:
-            _amt = pd.to_numeric(df["amount"], errors='coerce').fillna(0).sum()
-            metrics["amount_5d"] = float(_amt)
-
-        # 主力净流入 = 大单 + 特大单（moneyflow 接口不直接提供，用这个近似）
-        if "buy_elg_amount" in df.columns and "sell_elg_amount" in df.columns:
-            elg_buy = pd.to_numeric(df["buy_elg_amount"], errors='coerce').fillna(0)
-            elg_sell = pd.to_numeric(df["sell_elg_amount"], errors='coerce').fillna(0)
-            elg_net = (elg_buy - elg_sell).sum()
-        else:
-            elg_net = 0.0
-
-        if "buy_lg_amount" in df.columns and "sell_lg_amount" in df.columns:
-            lg_buy = pd.to_numeric(df["buy_lg_amount"], errors='coerce').fillna(0)
-            lg_sell = pd.to_numeric(df["sell_lg_amount"], errors='coerce').fillna(0)
-            lg_net = (lg_buy - lg_sell).sum()
-        else:
-            lg_net = 0.0
-
-        # 主力净流入 = 大单 + 特大单
-        metrics["net_flow_5d"] = float(lg_net + elg_net)
-
-        # 每日大单净流入占比 = (大单 + 特大单) / 成交额
-        # moneyflow 接口没有直接的占比字段，需要计算
-        if len(df) > 0:
-            daily_ratios = []
-            for _, row in df.iterrows():
-                lg_net = 0.0
-                elg_net = 0.0
-                if "buy_lg_amount" in row.index and "sell_lg_amount" in row.index:
-                    lg_net = float(row["buy_lg_amount"] or 0) - float(row["sell_lg_amount"] or 0)
-                if "buy_elg_amount" in row.index and "sell_elg_amount" in row.index:
-                    elg_net = float(row["buy_elg_amount"] or 0) - float(row["sell_elg_amount"] or 0)
-                main_net = lg_net + elg_net
-                # 获取成交额计算占比（如果有的话）
-                if "amount" in row.index and row["amount"] > 0:
-                    ratio = (main_net / float(row["amount"])) * 100
-                    daily_ratios.append(ratio)
-                else:
-                    daily_ratios.append(0.0)
-            metrics["daily_ratios"] = daily_ratios
-
-        # 大单净流入累计（不含特大单，与 moneyflow_ths 保持一致）
-        if "buy_lg_amount" in df.columns and "sell_lg_amount" in df.columns:
-            large_buy = pd.to_numeric(df["buy_lg_amount"], errors='coerce').fillna(0).sum()
-            large_sell = pd.to_numeric(df["sell_lg_amount"], errors='coerce').fillna(0).sum()
-            metrics["large_net"] = float(large_buy - large_sell)
-
-        # 小单净流入累计
-        if "buy_sm_amount" in df.columns and "sell_sm_amount" in df.columns:
-            small_buy = pd.to_numeric(df["buy_sm_amount"], errors='coerce').fillna(0).sum()
-            small_sell = pd.to_numeric(df["sell_sm_amount"], errors='coerce').fillna(0).sum()
-            metrics["small_net"] = float(small_buy - small_sell)
-
-        return metrics
-
-    def _fetch_north_fund_data(
-        self, stock_code: str, score_date: str = None
-    ) -> Optional[pd.DataFrame]:
         """
         从 Tushare hk_hold 接口获取北向资金持股数据
 
-        获取评分日期之前半年的北向资金持股数据，用于判断增减持。
-        确保回测和实盘使用数据逻辑一致（不会用到未来数据）。
+        获取最近两个季度的北向资金持股数据，用于判断增减持。
 
         参数:
             stock_code: 股票代码（6位数字）
-            score_date: 评分日期（YYYYMMDD 格式），为 None 时使用当前日期
         返回:
             DataFrame: 北向资金持股数据，失败返回 None
         """
-        # 评分日期未传时使用当前日期（兼容旧调用）
-        if score_date is None:
-            score_date = datetime.now().strftime("%Y%m%d")
-
-        # 构建缓存键（包含评分日期，确保回测不重用实盘缓存）
-        cache_key = f"north_fund_{stock_code}_{score_date}"
+        # 构建缓存键
+        cache_key = f"north_fund_{stock_code}"
         # 检查缓存
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -852,10 +487,9 @@ class MoneyflowScorer:
 
         try:
             pro = self._get_pro()
-            # 按评分日期计算查询范围：往前推 180 天
-            score_dt = datetime.strptime(score_date, "%Y%m%d")
-            end_date = score_dt.strftime("%Y%m%d")
-            start_date = (score_dt - timedelta(days=180)).strftime("%Y%m%d")
+            # 获取最近 180 天的北向资金数据
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d")
 
             # 调用 hk_hold 接口
             df = self._call_tushare_with_retry(
@@ -947,9 +581,7 @@ class MoneyflowScorer:
             # ratio == 0 时不加分不减分
         return total
 
-    def _score_north_fund(
-        self, stock_code: str, score_date: str = None
-    ) -> Tuple[float, str]:
+    def _score_north_fund(self, stock_code: str) -> Tuple[float, str]:
         """
         计算北向资金维度得分
 
@@ -962,13 +594,12 @@ class MoneyflowScorer:
 
         参数:
             stock_code: 股票代码（6位数字）
-            score_date: 评分日期（YYYYMMDD 格式），透传给数据获取方法
         返回:
             Tuple[float, str]: (北向资金得分, 持股状态)
             状态: "none" / "increase" / "decrease" / "hold"
         """
-        # 获取评分日期之前的北向资金数据（确保回测不用未来数据）
-        df = self._fetch_north_fund_data(stock_code, score_date=score_date)
+        # 获取北向资金数据
+        df = self._fetch_north_fund_data(stock_code)
 
         # 没有数据，视为没有持股
         if df is None or df.empty:
@@ -1068,20 +699,14 @@ class MoneyflowScorer:
             logger.debug(f"北向资金持平: {stock_code}")
             return base_score, "hold"
 
-<<<<<<< HEAD
     def _score_direction(self, large_net: float, small_net: float) -> float:
-=======
-    def _score_direction(self, large_net: float, small_net: float,
-                         amount_5d: float = 0.0) -> float:
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         """
         计算主力与散户方向维度得分
 
         评分标准：
           大单净流入 > 0 且 小单净流入 < 0：100分
           大单净流入 > 0 且 小单净流入 >= 0：60分
-          大单净流入 < 0 且 小单净流入 > 0：-100分（出货方向；
-              是否**否决**由 _is_distribution_veto 结合"占成交额比"判定）
+          大单净流入 < 0 且 小单净流入 > 0：-100分（一票否决）
           其他情况：0分
 
         参数:
@@ -1121,12 +746,7 @@ class MoneyflowScorer:
         
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_mf = executor.submit(self._fetch_moneyflow_data, stock_code, formatted_date)
-<<<<<<< HEAD
             future_nf = executor.submit(self._fetch_north_fund_data, stock_code)
-=======
-            # 北向资金数据也使用评分日期，确保回测不用未来数据
-            future_nf = executor.submit(self._fetch_north_fund_data, stock_code, formatted_date)
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             
             try:
                 df = future_mf.result(timeout=10)
@@ -1195,7 +815,6 @@ class MoneyflowScorer:
             "small_net": 0.0,
         }
 
-<<<<<<< HEAD
         # 5日主力净额直接使用Tushare已计算好的net_d5_amount字段
         # net_d5_amount是Tushare统一计算的5日主力净额，避免自己求和导致范围不一致
         if "net_d5_amount" in df.columns:
@@ -1205,41 +824,6 @@ class MoneyflowScorer:
             net_amount_col = pd.to_numeric(df["net_amount"], errors='coerce').fillna(0)
             metrics["net_flow_5d"] = float(net_amount_col.sum())
         elif "net_buy_amount" in df.columns:
-=======
-        # 5日成交额（用于"净额占成交额比"的相对口径；缺失时保持 0 → 回退绝对阈值）
-        if "amount" in df.columns:
-            _amt = pd.to_numeric(df["amount"], errors='coerce').fillna(0).sum()
-            metrics["amount_5d"] = float(_amt)
-
-        # 【2026-09-25 修复·口径统一 ✓】不再优先使用源端聚合字段 `net_d5_amount` ✗
-        #   原先：有 `net_d5_amount` 就用它 ✗（源端"5 日"的**起止范围**由源决定 ✗，
-        #   可能含窗口外日期 ✗），没有才自行求和 ✓ ⇒ **同一指标两条口径** ✗✓：
-        #       · 本地路径（已落库）→ 剔除该列 → Σ(net_amount) ✓
-        #       · 在线路径（源直连）→ 用源端聚合 ✗
-        #   ⇒ 同一股票同一日、仅因数据来源不同就得出**不同 5 日主力净额** ✗ ——
-        #     正是 `002372` 那种"评分漂移"的温床 ✗。
-        #   现统一为 **Σ(窗口内净额)** ✓（窗口由**本地交易日历**定义 ✓，可复现 ✓），
-        #   并附注：源端 `net_d5_amount` 自 2027-07-06 起停供 ✓，本改动同时消除了该风险 ✓
-        # 【2026-09-26 方案 C ✓】**源端 5 日聚合优先**（同花顺口径 ✓ = 旧路径口径 ✓）
-        #   同花顺 `net_d5_amount` = 源端给出的"5 日主力净额" ✓ —— 旧评分路径正是用它 ✓，
-        #   实测可逐条复现（`600076 @ 2026-09-21` 旧值 -2855.1 == 源端 d5 ✓）。
-        #   取**最后一行（截至评分日）** ✓：窗口按 `trade_date` 升序 ⇒ 末行 = 最新 ✓。
-        #   东财行该列为 NULL ✓ → 自动落到下面的 `Σ(net_amount)` 分支 ✓（互不干扰 ✓）。
-        _d5_taken = False
-        if "net_d5_amount" in df.columns:
-            _d = df
-            if "trade_date" in _d.columns:
-                _d = _d.assign(trade_date=_d["trade_date"].astype(str)).sort_values("trade_date")
-            _d5 = pd.to_numeric(_d["net_d5_amount"], errors='coerce').dropna()
-            if len(_d5):
-                metrics["net_flow_5d"] = float(_d5.iloc[-1])
-                _d5_taken = True
-
-        if not _d5_taken and "net_amount" in df.columns:
-            net_amount_col = pd.to_numeric(df["net_amount"], errors='coerce').fillna(0)
-            metrics["net_flow_5d"] = float(net_amount_col.sum())
-        elif not _d5_taken and "net_buy_amount" in df.columns:
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
             net_buy_col = pd.to_numeric(df["net_buy_amount"], errors='coerce').fillna(0)
             metrics["net_flow_5d"] = float(net_buy_col.sum())
 
@@ -1248,20 +832,6 @@ class MoneyflowScorer:
             metrics["daily_ratios"] = df["buy_lg_amount_rate"].fillna(0).tolist()
         elif "net_buy_rate" in df.columns:
             metrics["daily_ratios"] = df["net_buy_rate"].fillna(0).tolist()
-
-        # 【2026-09-11】出货信号（条件2）直接用接口现成的"净流入占比"字段（%），
-        #   无需拿 5 日成交额去算：
-        #     buy_lg_amount_rate —— 大单净流入占比（负 = 净流出）
-        #     buy_sm_amount_rate —— 小单净流入占比（正 = 净流入）
-        #   取近 5 日均值，与"近5日"口径保持一致。
-        if "buy_lg_amount_rate" in df.columns:
-            metrics["lg_rate_avg"] = float(
-                pd.to_numeric(df["buy_lg_amount_rate"],
-                              errors='coerce').fillna(0).mean())
-        if "buy_sm_amount_rate" in df.columns:
-            metrics["sm_rate_avg"] = float(
-                pd.to_numeric(df["buy_sm_amount_rate"],
-                              errors='coerce').fillna(0).mean())
 
         # 大单净流入累计
         if "buy_lg_amount" in df.columns and "sell_lg_amount" in df.columns:
@@ -1343,21 +913,12 @@ class MoneyflowScorer:
         main_score = self._score_main_net_flow(net_flow_5d)
         detail.main_net_flow_score = main_score
 
-        # 检查主力净流入一票否决（与 check_veto 同一套联合判定，避免绕过相对口径）
-        _veto, _reason = self._is_main_net_flow_veto(
-            net_flow_5d, metrics.get("amount_5d", 0.0),
-            metrics.get('lg_rate_avg'))
-        if _veto:
-            detail.veto = True
-            detail.veto_reason = _reason
-            logger.warning(f"股票 {stock_code} 主力净流入一票否决: {_reason}")
-            return VETO_SCORE, detail
+        # 检查主力净流入一票否决
         if main_score == VETO_SCORE:
-            # 绝对额超阈但"占成交额比"温和 → 豁免否决，按最低档（净流出）计分
-            logger.info(f"股票 {stock_code} 5日主力净额超绝对阈但占比温和，"
-                        f"按最低档 -20 计分（不否决）")
-            main_score = -20
-            detail.main_net_flow_score = main_score
+            detail.veto = True
+            detail.veto_reason = f"5日主力净额 {net_flow_5d:.0f} 万元 < -10000万元"
+            logger.warning(f"股票 {stock_code} 主力净流入一票否决")
+            return VETO_SCORE, detail
 
         # 2. 计算大单占比得分
         daily_ratios = metrics["daily_ratios"]
@@ -1369,27 +930,18 @@ class MoneyflowScorer:
         detail.north_fund_score = north_score
         detail.north_fund_status = north_status
 
-        # 4. 计算主力散户方向得分（出货信号判定需要 5日成交额）
+        # 4. 计算主力散户方向得分
         large_net = metrics["large_net"]
         small_net = metrics["small_net"]
-        amount_5d = metrics.get("amount_5d", 0.0)
-        direction_score = self._score_direction(large_net, small_net, amount_5d)
+        direction_score = self._score_direction(large_net, small_net)
         detail.direction_score = direction_score
 
-        # 检查方向一票否决（出货信号；首选接口占比字段，口径与 check_veto 完全一致）
-        _dv, _dreason = self._is_distribution_veto(
-            large_net, small_net, amount_5d,
-            metrics.get('lg_rate_avg'), metrics.get('sm_rate_avg'))
-        if _dv:
-            detail.veto = True
-            detail.veto_reason = _dreason
-            logger.warning(f"股票 {stock_code} 出货信号一票否决: {_dreason}")
-            return VETO_SCORE, detail
+        # 检查方向一票否决（出货信号）
         if direction_score == VETO_SCORE:
-            # 出货方向但量级轻微 → 豁免否决，归入"其他情况"（0 分）
-            logger.info(f"股票 {stock_code} 出货方向但量级轻微，按 0 分计（不否决）")
-            direction_score = 0
-            detail.direction_score = direction_score
+            detail.veto = True
+            detail.veto_reason = "出货信号：大单净流出且小单净流入"
+            logger.warning(f"股票 {stock_code} 出货信号一票否决")
+            return VETO_SCORE, detail
 
         # 计算综合得分（加权求和）
         total_score = (
@@ -1409,149 +961,15 @@ class MoneyflowScorer:
         )
         return total_score, detail
 
-    @staticmethod
-    def _is_main_net_flow_veto(net_flow_5d: float,
-                               amount_5d: float = 0.0,
-                               lg_rate: float = None) -> Tuple[bool, str]:
-        """判断"5日主力净额"是否触发一票否决（绝对额 + 相对占比 联合判定）
-
-        相对占比的取值优先级（2026-09-11 实测：moneyflow_ths 接口**没有 amount 列**，
-        故"净额/成交额"在真实数据下取不到 → 改用接口现成的占比字段优先）：
-          1. 【首选】lg_rate = 接口 buy_lg_amount_rate 均值（大单净流入占比，%）
-                否决 ⟺ lg_rate < VETO_NET_FLOW_RATIO_THRESHOLD
-          2. 【回退】amount_5d > 0 → 占比 = 净额 / 5日成交额 × 100
-          3. 【兜底】两者都取不到 → 按绝对额否决（兼容旧行为）
-        """
-        try:
-            nf = float(net_flow_5d or 0)
-        except (TypeError, ValueError):
-            nf = 0.0
-        if nf >= VETO_MAIN_NET_FLOW_THRESHOLD:
-            return False, ""
-
-        th = VETO_NET_FLOW_RATIO_THRESHOLD
-
-        # ---- 1. 首选：接口现成的占比字段（大单净流入占比均值，%）----
-        if th is not None and lg_rate is not None:
-            try:
-                lgr = float(lg_rate)
-            except (TypeError, ValueError):
-                lgr = None
-            if lgr is not None:
-                if lgr < th:
-                    return True, (f"5日主力净额 {nf:.0f} 万元 < "
-                                  f"{VETO_MAIN_NET_FLOW_THRESHOLD}万元，且大单净流入占比 "
-                                  f"{lgr:.2f}% < {th}%")
-                logger.info(
-                    f"5日主力净额 {nf:.0f} 万元超绝对阈，但大单净流入占比 "
-                    f"{lgr:.2f}% 未达 {th}%（相对温和）→ 判定为正常波动，不否决")
-                return False, ""
-
-        # ---- 2. 回退：净额 / 5日成交额 ----
-        try:
-            amt = float(amount_5d or 0)
-        except (TypeError, ValueError):
-            amt = 0.0
-
-        if amt > 0 and th is not None:
-            ratio = nf / amt * 100
-            if ratio >= th:
-                logger.info(
-                    f"5日主力净额 {nf:.0f} 万元（占成交额 {ratio:.2f}%）"
-                    f"未达相对阈 {th}%（成交额 {amt:.0f} 万元）→ 正常波动，不否决")
-                return False, ""
-            return True, (f"5日主力净额 {nf:.0f} 万元 < "
-                          f"{VETO_MAIN_NET_FLOW_THRESHOLD}万元，且占成交额 "
-                          f"{ratio:.2f}% < {th}%")
-
-        # ---- 3. 兜底：绝对额 ----
-        return True, (f"5日主力净额 {nf:.0f} 万元 < "
-                      f"{VETO_MAIN_NET_FLOW_THRESHOLD}万元")
-
-    @staticmethod
-    def _is_distribution_veto(large_net: float, small_net: float,
-                              amount_5d: float = 0.0,
-                              lg_rate: float = None,
-                              sm_rate: float = None) -> Tuple[bool, str]:
-        """判断是否触发"出货信号"一票否决
-
-        判定优先级：
-          1. 【首选】接口直接提供的"净流入占比"字段（%），**无需自算成交额**：
-                 buy_lg_amount_rate（大单净流入占比）< -阈值
-                 且 buy_sm_amount_rate（小单净流入占比）>  阈值
-          2. 【回退】金额 / 成交额（接口无占比字段时）：
-                 大单净流出额/成交额 > 阈值 且 小单净流入额/成交额 > 阈值
-          3. 【兜底】纯方向判定：大单净流入 < 0 且 小单净流入 > 0
-
-        参数:
-            large_net/small_net: 大单/小单净流入金额（万元）
-            amount_5d: 5日成交额（万元，仅回退路径使用）
-            lg_rate: 大单净流入占比均值（%，接口 buy_lg_amount_rate）
-            sm_rate: 小单净流入占比均值（%，接口 buy_sm_amount_rate）
-        """
-        try:
-            lg = float(large_net or 0)
-        except (TypeError, ValueError):
-            lg = 0.0
-        try:
-            sm = float(small_net or 0)
-        except (TypeError, ValueError):
-            sm = 0.0
-
-        th = VETO_DISTRIBUTION_RATIO_THRESHOLD
-
-        # ---- 1. 首选：接口现成的占比字段（%）----
-        if th is not None and lg_rate is not None and sm_rate is not None:
-            try:
-                lgr = float(lg_rate)
-                smr = float(sm_rate)
-            except (TypeError, ValueError):
-                lgr = smr = None
-            if lgr is not None and smr is not None:
-                if lgr < -th and smr > th:
-                    return True, (f"出货信号：大单净流入占比 {lgr:.2f}% < -{th}% 且 "
-                                  f"小单净流入占比 {smr:.2f}% > {th}%")
-                # 【2026-09-28 减噪 ✗→✓】原为 `logger.info` ✗ —— 实测单日 **18,464 行** ✗✓
-                #   （回测里逐日逐票都打 ✗，占全天 6.5% ✗）。"**未达阈值**"本质是
-                #   "无事发生" ✗ ⇒ 属细节 ⇒ 降 `debug` ✓；
-                #   ⚠️ **触发否决**时的 INFO 一条都没动 ✓（那是真信号 ✓）。
-                logger.debug(
-                    f"出货信号未达阈值（大单净流入占比 {lgr:.2f}%、小单净流入占比 "
-                    f"{smr:.2f}%；需 大单<-{th}% 且 小单>+{th}%）→ 不触发否决")
-                return False, ""
-
-        # ---- 2. 回退：金额 / 成交额 ----
-        if not (lg < 0 and sm > 0):
-            return False, ""
-
-        try:
-            amt = float(amount_5d or 0)
-        except (TypeError, ValueError):
-            amt = 0.0
-
-        if amt > 0 and th is not None:
-            lg_ratio = -lg / amt * 100      # 大单净流出占比（正值）
-            sm_ratio = sm / amt * 100       # 小单净流入占比（正值）
-            if lg_ratio > th and sm_ratio > th:
-                return True, (f"出货信号：大单净流出占成交额 {lg_ratio:.2f}% 且 "
-                              f"小单净流入占成交额 {sm_ratio:.2f}%"
-                              f"（均 > {th}%）")
-            logger.info(
-                f"出货方向但量级轻微（大单净流出占成交额 {lg_ratio:.2f}%、"
-                f"小单净流入占成交额 {sm_ratio:.2f}%，阈值 {th}%）→ 不触发否决")
-            return False, ""
-
-        return True, "出货信号：大单净流出且小单净流入"
-
     def check_veto(
         self, stock_code: str, score_date: str, metrics: dict = None
     ) -> Tuple[bool, str]:
         """
         检查资金面一票否决条件
 
-        一票否决条件（2026-09-11 改为"绝对额/方向 + 占比强度"联合判定）：
-          1. 5日主力净额 < -10000 万元 且 大单净流入占比 < -5%
-          2. 大单净流出占比 > 1% 且 小单净流入占比 > 1%
+        一票否决条件：
+          1. 5日主力净额 < -1000万元
+          2. 大单净流入 < 0 且 小单净流入 > 0（出货信号）
 
         参数:
             stock_code: 股票代码（6位数字）
@@ -1569,27 +987,18 @@ class MoneyflowScorer:
             # 提取评分指标
             metrics = self._extract_flow_metrics(df)
 
-<<<<<<< HEAD
         # 条件1：5日主力净额 < -10000万元
-=======
-        # 条件1：5日主力净额超阈（绝对额 + 相对占比联合判定，避免大成交额错杀；
-        #        相对占比首选接口 buy_lg_amount_rate，ths 接口无成交额字段）
->>>>>>> 9b2e8f0b179c4c897fac899673bf9c0751b5507e
         net_flow_5d = metrics["net_flow_5d"]
-        amount_5d = metrics.get("amount_5d", 0.0)
-        is_veto, reason = self._is_main_net_flow_veto(
-            net_flow_5d, amount_5d, metrics.get('lg_rate_avg'))
-        if is_veto:
+        if net_flow_5d < VETO_MAIN_NET_FLOW_THRESHOLD:
+            reason = f"5日主力净额 {net_flow_5d:.0f} 万元 < -10000万元"
             logger.warning(f"股票 {stock_code} 一票否决: {reason}")
             return True, reason
 
-        # 条件2：出货信号（首选接口占比字段：大单净流入占比 < -1% 且 小单净流入占比 > 1%）
+        # 条件2：大单净流出 + 小单净流入（出货信号）
         large_net = metrics["large_net"]
         small_net = metrics["small_net"]
-        is_veto, reason = self._is_distribution_veto(
-            large_net, small_net, amount_5d,
-            metrics.get('lg_rate_avg'), metrics.get('sm_rate_avg'))
-        if is_veto:
+        if large_net < 0 and small_net > 0:
+            reason = "出货信号：大单净流出且小单净流入"
             logger.warning(f"股票 {stock_code} 一票否决: {reason}")
             return True, reason
 
