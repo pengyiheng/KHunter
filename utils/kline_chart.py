@@ -12,8 +12,8 @@ from pathlib import Path
 import sys
 import os
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'SimHei', 'Arial Unicode MS', 'WenQuanYi Micro Hei']
+# 设置中文字体（中文字体优先，DejaVu Sans 仅作兜底，否则中文会渲染成方块）
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 # 最大文件大小限制 (10KB)

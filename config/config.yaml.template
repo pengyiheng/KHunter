@@ -4,7 +4,7 @@
 # 使用说明：
 # 1. 复制此文件为 config.yaml
 # 2. 填入你的钉钉机器人配置
-# 3. 不要提交 config.yaml 到Git仓库（已加入.gitignore）
+# 3. 不要提交 config.yaml 到 Git 仓库（已加入 .gitignore）
 
 data_dir: data
 
@@ -24,3 +24,25 @@ schedule:
 update:
   lookback_days: 10
   skip_failed: true
+
+# 股票过滤配置
+filters:
+  # 最小市值（亿元）
+  min_market_cap: 10
+  # 最大市值（亿元）
+  max_market_cap: 10000
+  # 最小流通股本（亿股）
+  min_float_shares: 1
+  # 最大流通股本（亿股）
+  max_float_shares: 100
+  # 排除新股（上市天数）
+  exclude_new_stock_days: 60
+  # 排除ST股票
+  exclude_st: true
+  # 排除退市风险股票
+  exclude_delisting_risk: true
+
+# 交易配置
+trading:
+  # 初始资金（元）
+  initial_capital: 30000.0

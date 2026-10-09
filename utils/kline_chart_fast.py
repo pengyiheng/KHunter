@@ -16,6 +16,10 @@ from matplotlib.patches import Rectangle
 import pandas as pd
 from pathlib import Path
 
+# 设置中文字体（与 kline_chart.py 保持一致：中文字体优先，DejaVu Sans 兜底）
+plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
 
 # 常量定义
 DEFAULT_OUTPUT_DIR = '/tmp/kline_charts'

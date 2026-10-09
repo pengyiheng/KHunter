@@ -30,7 +30,13 @@ reports/
 .env
 .env.local
 
+# 本地敏感配置（含密钥，勿提交；模板见 *.template）
+config/config.yaml
+config/tushare_config.json
+
 data/*.db
 data/*.sqlite
 *.db
 *.sqlite
+*.db-shm
+*.db-wal
