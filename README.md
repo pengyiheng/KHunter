@@ -332,3 +332,15 @@ GitHub: https://github.com/ling-0729/KHunter
 如需获取项目更新、技术文档详细介绍、和作者深度交流，请访问飞书文档：
 
 👉 [KHunter - 项目与技术交流入口](https://my.feishu.cn/wiki/NSOrwyfRNi6OhVkRiNucoL30nAh?from=from_copylink)
+
+
+
+## 推送问题
+### 清理 Git 历史中的大文件
+```
+pip install git-filter-repo
+git filter-repo --path data/stock_selection.db --invert-paths --force
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+git push origin main --force
+```

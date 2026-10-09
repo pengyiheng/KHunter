@@ -29,3 +29,8 @@ reports/
 # Env files
 .env
 .env.local
+
+data/*.db
+data/*.sqlite
+*.db
+*.sqlite
