@@ -1,0 +1,8 @@
+{
+  "tushare_token": "440d3ff630f66a72a20e93709864e06eac7c9f4e1d7dc31e5103b22a",
+  "use_pro_api": true,
+  "request_interval": 0.3,
+  "max_retries": 3,
+  "cache_enabled": false,
+  "cache_dir": "./tushare_cache"
+}

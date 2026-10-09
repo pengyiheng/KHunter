@@ -82,9 +82,6 @@ git clone https://github.com/ling-0729/KHunter.git
 cd KHunter
 
 # 2. 安装依赖
-# pip install -r requirements.txt -i https://pypi.org/simple
-# pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
-# pip config set global.index-url https://pypi.org/simple
 pip install -r requirements.txt
 
 # 3. 启动Web界面

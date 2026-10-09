@@ -1,0 +1,13 @@
+[
+  {
+    "id": "20261008_174142",
+    "timestamp": "2026-10-08 17:41:42",
+    "strategies": [
+      "ImmortalGuidanceStrategy"
+    ],
+    "timing_strategy": "turtle",
+    "initial_capital": 300000,
+    "mode": "realtime",
+    "status": "completed"
+  }
+]
